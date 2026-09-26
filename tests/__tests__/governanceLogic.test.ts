@@ -71,5 +71,47 @@ describe('isProposalApproved', () => {
     const approved = isProposalApproved(proposal, 100, baseConfig);
     expect(approved).toBe(true);
   });
+
+  describe('with quadratic voting enabled', () => {
+    const quadConfig: GovernanceConfig = {
+      ...baseConfig,
+      useQuadraticVoting: true,
+    };
+
+    it('uses quadratic weight scaling to overturn whale-dominated vote', () => {
+      // Linear: 10,000 approvals vs 10,000 rejections (50% approval, fails 60% requirement)
+      // Quadratic: 1,000 approvals vs 100 rejections (90.9% approval, passes 60% requirement)
+      const proposal = makeProposal({
+        approvals: 10000,
+        rejections: 10000,
+        abstentions: 0,
+        totalVotingPowerAtCreation: 25000,
+        quadraticApprovals: 1000,
+        quadraticRejections: 100,
+        quadraticAbstentions: 0,
+        totalQuadraticVotingPowerAtCreation: 1200,
+      });
+
+      // Linear check fails
+      expect(isProposalApproved(proposal, 25000, baseConfig)).toBe(false);
+
+      // Quadratic check passes
+      expect(isProposalApproved(proposal, 25000, quadConfig)).toBe(true);
+    });
+
+    it('fails when quadratic quorum is not reached', () => {
+      const proposal = makeProposal({
+        approvals: 100,
+        rejections: 0,
+        abstentions: 0,
+        quadraticApprovals: 10,
+        quadraticRejections: 0,
+        quadraticAbstentions: 0,
+        totalQuadraticVotingPowerAtCreation: 1000, // minQuorumRatio (0.2) requires 200 votes
+      });
+
+      expect(isProposalApproved(proposal, 1000000, quadConfig)).toBe(false);
+    });
+  });
 });
 
