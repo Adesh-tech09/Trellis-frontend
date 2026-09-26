@@ -3,6 +3,7 @@ import {
   isFeatureEnabled,
   setFeatureFlagOverride,
   startFeatureFlagPolling,
+  subscribeToFeatureFlagChanges,
   updateRemoteFeatureFlags,
 } from "@/lib/feature-flags";
 
@@ -42,12 +43,13 @@ describe("feature flags", () => {
     const includedUsers = users.filter((userId) =>
       isFeatureEnabled("securityReportExport", {}, userId),
     );
+    const repeatedAssignments = users.filter((userId) =>
+      isFeatureEnabled("securityReportExport", {}, userId),
+    );
 
     expect(includedUsers.length).toBeGreaterThanOrEqual(900);
     expect(includedUsers.length).toBeLessThanOrEqual(1_100);
-    for (const userId of includedUsers.slice(0, 20)) {
-      expect(isFeatureEnabled("securityReportExport", {}, userId)).toBe(true);
-    }
+    expect(repeatedAssignments).toEqual(includedUsers);
     expect(isFeatureEnabled("securityReportExport", {}, "")).toBe(false);
   });
 
@@ -61,7 +63,7 @@ describe("feature flags", () => {
 
   it("applies polled remote changes without restarting evaluation", async () => {
     let pollCount = 0;
-    const fetcher = jest.fn<typeof fetch>(async () => {
+    const fetcher = jest.fn(async () => {
       pollCount += 1;
       return {
         ok: true,
@@ -70,6 +72,9 @@ describe("feature flags", () => {
         }),
       } as Response;
     });
+    const listener = jest.fn();
+    const unsubscribe = subscribeToFeatureFlagChanges(listener);
+    jest.useFakeTimers();
     const stopPolling = startFeatureFlagPolling({
       url: "https://flags.example.test/config",
       intervalMs: 5,
@@ -77,11 +82,14 @@ describe("feature flags", () => {
     });
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await jest.advanceTimersByTimeAsync(10);
       expect(fetcher.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(isFeatureEnabled("securityReportExport", {})).toBe(true);
+      expect(listener).toHaveBeenCalled();
     } finally {
       stopPolling();
+      unsubscribe();
+      jest.useRealTimers();
     }
   });
 });
