@@ -3,6 +3,20 @@ import { defineConfig, devices } from '@playwright/test';
 const PORT = process.env.PORT || '3000';
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`;
 
+/**
+ * Viewports every page is expected to hold its layout at.
+ * Kept in sync with `tailwind.config.cjs` (sm 600 / md 900 / lg 1200) and with
+ * `e2e/viewport.spec.ts`, which asserts the layout at each of these sizes.
+ */
+export const VIEWPORTS = {
+  mobile: { width: 375, height: 667 },
+  tablet: { width: 768, height: 1024 },
+  desktop: { width: 1440, height: 900 },
+} as const;
+
+/** Layout assertions belong to the viewport projects only. */
+const LAYOUT_SPEC = /viewport\.spec\.ts/;
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -42,6 +56,7 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
   },
   projects: [
+    // ── Engine matrix: the functional flows on every engine we support. ──────
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], deviceScaleFactor: 1 },
