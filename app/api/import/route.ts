@@ -8,6 +8,11 @@ import { runImportPipelineWithProgress } from '@/lib/import/stream';
  * Execute bulk import pipeline with validation, idempotency, duplicate detection, and rollback guidance.
  */
 export async function POST(request: NextRequest) {
+  const rl = checkRateLimit(request, IMPORT_RATE_LIMIT);
+  if (rl.blocked) {
+    return createRateLimitResponse(rl, 'Import rate limit exceeded. Please try again later.');
+  }
+
   try {
     const contentType = request.headers.get('content-type') || '';
     const { searchParams } = new URL(request.url);
