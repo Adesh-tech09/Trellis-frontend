@@ -17,6 +17,8 @@ export interface BugReport {
   rewardStatus: 'pending' | 'approved' | 'paid' | 'rejected';
   assignedTo?: string;
   resolutionNotes?: string;
+  githubIssueNumber?: number;
+  githubIssueUrl?: string;
 }
 
 export interface BugReportSubmission {

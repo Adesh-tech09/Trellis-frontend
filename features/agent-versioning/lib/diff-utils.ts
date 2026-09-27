@@ -1,4 +1,4 @@
-import { diffJson, Change } from 'diff';
+import { diffJson, diffLines, Change } from 'diff';
 import { ContractStateSchema } from '../types';
 
 export interface SchemaDiffResult {
@@ -36,4 +36,8 @@ export const compareSchemas = (
     hasBreakingChanges,
     changes: differences
   };
+};
+
+export const compareText = (oldText: string, newText: string): Change[] => {
+  return diffLines(oldText, newText);
 };

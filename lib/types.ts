@@ -47,6 +47,7 @@ export interface StellarNetworkConfig {
   displayName: string;
   horizonUrl: string;
   rpcUrl?: string;
+  rpcFallbackUrls?: string[];
   networkPassphrase: string;
   color: string;
   badge: string;
@@ -68,11 +69,23 @@ export interface StellarWallet {
   network: StellarNetwork;
 }
 
+export type RpcConnectionStatus = "connected" | "degraded" | "offline";
+
+export interface RpcConnectionStatusInfo {
+  status: RpcConnectionStatus;
+  activeNode: string | null;
+  fallbackNodes: number;
+  latencyMs: number;
+  warning?: string;
+  lastError?: string;
+}
+
 export interface WalletContextType {
   wallet: StellarWallet | null;
   network: StellarNetwork;
   isConnecting: boolean;
   error: string | null;
+  rpcStatus: RpcConnectionStatusInfo;
   connectWallet: (
     walletType: "freighter" | "albedo" | "ledger",
   ) => Promise<void>;
@@ -108,6 +121,11 @@ export interface SorobanFunctionSpec {
   result: string;
 }
 
+export type SorobanScValType =
+  | "bool" | "string" | "symbol" | "bytes" | "address" | "void"
+  | "u32" | "i32" | "u64" | "i64" | "u128" | "i128" | "u256" | "i256"
+  | "timepoint" | "duration";
+
 export interface ResourceMetrics {
   cpuInstructions: number;
   ramBytes: number;
@@ -116,11 +134,13 @@ export interface ResourceMetrics {
   readCount: number;
   writeCount: number;
   costXlm: string;
+  minResourceFee?: string;
 }
 
 export interface SorobanTransactionResult extends TransactionResult {
   metrics?: ResourceMetrics;
   events?: SorobanEvent[];
+  isFeeBumped?: boolean;
 }
 
 export interface SorobanEvent {

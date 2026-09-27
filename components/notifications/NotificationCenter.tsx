@@ -1,23 +1,77 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LifecycleNotification } from '@/lib/notifications/lifecycle-types';
 import { lifecycleNotifications } from '@/lib/notifications/lifecycle-manager';
+import {
+  evaluateAlert,
+  loadAlertPreferences,
+  updateAlertPreferences,
+} from '@/lib/notifications/alert-preferences';
+import { playChime } from '@/lib/notifications/chime';
 
 export interface NotificationCenterProps {
   walletAddress?: string;
   onSelectAction?: (actionId: string, notif: LifecycleNotification) => void;
+  /** Set to false to render the list without chimes (e.g. on a settings page). */
+  enableChimes?: boolean;
 }
 
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   walletAddress,
   onSelectAction,
+  enableChimes = true,
 }) => {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [audioEnabled, setAudioEnabled] = useState(
+    () => loadAlertPreferences().audioEnabled,
+  );
+  // `null` until the first render so mounting the centre does not chime for
+  // notifications that were already there.
+  const seenIdsRef = useRef<Set<string> | null>(null);
 
   const notifications = lifecycleNotifications.getForUser(walletAddress, { unreadOnly });
   const unreadCount = lifecycleNotifications.getForUser(walletAddress, { unreadOnly: true }).length;
+
+  useEffect(() => {
+    const ids = notifications.map((n) => n.id);
+
+    if (seenIdsRef.current === null) {
+      seenIdsRef.current = new Set(ids);
+      return;
+    }
+
+    if (!enableChimes) {
+      ids.forEach((id) => seenIdsRef.current?.add(id));
+      return;
+    }
+
+    const preferences = loadAlertPreferences();
+
+    for (const notification of notifications) {
+      if (seenIdsRef.current.has(notification.id)) {
+        continue;
+      }
+
+      seenIdsRef.current.add(notification.id);
+
+      // The policy decides: audio switch, category mute and quiet hours.
+      if (evaluateAlert(preferences, {
+        severity: notification.severity,
+        eventType: notification.type,
+      }).play) {
+        playChime(notification.severity, { volume: preferences.volume });
+      }
+    }
+    // `refreshKey` is included so a store update that keeps the same ids is a
+    // no-op and a new id is always evaluated.
+  }, [notifications, refreshKey, enableChimes]);
+
+  const toggleAudio = () => {
+    const next = updateAlertPreferences({ audioEnabled: !audioEnabled });
+    setAudioEnabled(next.audioEnabled);
+  };
 
   const handleMarkRead = (id: string) => {
     lifecycleNotifications.markAsRead(id);
@@ -46,6 +100,18 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
           )}
         </div>
         <div className="flex items-center gap-2">
+          {enableChimes && (
+            <button
+              onClick={toggleAudio}
+              aria-pressed={audioEnabled}
+              title={audioEnabled ? 'Mute alert sounds' : 'Unmute alert sounds'}
+              className={`text-xs px-2 py-1 rounded transition ${
+                audioEnabled ? 'text-purple-400' : 'text-neutral-500 hover:text-neutral-300'
+              }`}
+            >
+              {audioEnabled ? '🔔 Sound' : '🔕 Muted'}
+            </button>
+          )}
           <button
             onClick={() => setUnreadOnly(!unreadOnly)}
             className={`text-xs px-2 py-1 rounded transition ${

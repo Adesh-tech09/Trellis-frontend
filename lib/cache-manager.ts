@@ -569,3 +569,29 @@ class CacheManager {
 }
 
 export default CacheManager;
+
+const METADATA_DB = 'trellis-ipfs-metadata';
+const METADATA_STORE = 'verified';
+const memoryMetadata = new Map<string, unknown>();
+
+function openMetadataDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(METADATA_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(METADATA_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getVerifiedMetadata<T>(cid: string): Promise<T | null> {
+  if (memoryMetadata.has(cid)) return memoryMetadata.get(cid) as T;
+  const db = await openMetadataDb(); if (!db) return null;
+  return new Promise((resolve, reject) => { const request = db.transaction(METADATA_STORE, 'readonly').objectStore(METADATA_STORE).get(cid); request.onsuccess = () => resolve((request.result as T | undefined) ?? null); request.onerror = () => reject(request.error); });
+}
+
+export async function setVerifiedMetadata(cid: string, value: unknown): Promise<void> {
+  memoryMetadata.set(cid, value);
+  const db = await openMetadataDb(); if (!db) return;
+  await new Promise<void>((resolve, reject) => { const request = db.transaction(METADATA_STORE, 'readwrite').objectStore(METADATA_STORE).put(value, cid); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); });
+}

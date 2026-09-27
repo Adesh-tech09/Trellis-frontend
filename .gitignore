@@ -142,3 +142,5 @@ vite.config.ts.timestamp-*
 playwright-report/
 test-results/
 blob-report/
+# NOTE: e2e/__screenshots__/ holds committed visual-regression baselines — do not
+# add it here. It is the reference your Playwright snapshot comparisons use.

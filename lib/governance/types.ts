@@ -2,7 +2,7 @@ import type { StellarNetwork } from '../types';
 
 export type ProposalType = 'upgrade_agent' | 'update_params' | 'treasury_spend';
 
-export type ProposalStatus = 'pending' | 'active' | 'failed' | 'executed' | 'expired';
+export type ProposalStatus = 'pending' | 'active' | 'failed' | 'queued' | 'executed' | 'expired';
 
 export interface GovernanceConfig {
   network: StellarNetwork;
@@ -16,6 +16,9 @@ export interface GovernanceConfig {
   requiredApprovalRatio: number; // e.g. 0.6 for 60%
   minQuorumRatio: number; // e.g. 0.2 for 20%
   timelockSeconds: number;
+  useQuadraticVoting?: boolean;
+  minAccountAgeDays?: number;
+  minTransactionCount?: number;
 }
 
 export interface ProposalActionUpgradeAgent {
@@ -40,6 +43,16 @@ export type ProposalAction =
   | ProposalActionUpdateParams
   | ProposalActionTreasurySpend;
 
+export interface ProposalVoteBreakdown {
+  voter: string;
+  tokenBalance: number;
+  linearVotingPower: number;
+  quadraticVotingPower: number;
+  choice: VoteChoice;
+  timestamp: string;
+  isSybilVerified?: boolean;
+}
+
 export interface Proposal {
   id: string;
   title: string;
@@ -55,6 +68,11 @@ export interface Proposal {
   rejections: number;
   abstentions: number;
   totalVotingPowerAtCreation: number;
+  quadraticApprovals?: number;
+  quadraticRejections?: number;
+  quadraticAbstentions?: number;
+  totalQuadraticVotingPowerAtCreation?: number;
+  votes?: ProposalVoteBreakdown[];
 }
 
 export type VoteChoice = 'approve' | 'reject' | 'abstain';
@@ -63,9 +81,11 @@ export interface Vote {
   proposalId: string;
   voter: string;
   votingPower: number;
+  quadraticVotingPower?: number;
   choice: VoteChoice;
   txHash: string;
   timestamp: string;
+  isSybilVerified?: boolean;
 }
 
 export interface TreasuryBalance {
