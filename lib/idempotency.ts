@@ -55,17 +55,19 @@ export interface IdempotencyStore {
 
 export class IdempotencyError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly status: number;
+  constructor(code: string, message: string, status = 400) {
     super(message);
     this.name = 'IdempotencyError';
     this.code = code;
+    this.status = status;
   }
 }
 
 /** The key was already used for a different request. */
 export class IdempotencyConflictError extends IdempotencyError {
   constructor(message = 'This idempotency key was already used for a different request') {
-    super('IDEMPOTENCY_CONFLICT', message);
+    super('IDEMPOTENCY_CONFLICT', message, 409);
     this.name = 'IdempotencyConflictError';
   }
 }
@@ -73,7 +75,7 @@ export class IdempotencyConflictError extends IdempotencyError {
 /** The key's replay window has passed; a fresh key is required. */
 export class IdempotencyKeyExpiredError extends IdempotencyError {
   constructor(message = 'This idempotency key has expired; start the operation again with a new key') {
-    super('IDEMPOTENCY_KEY_EXPIRED', message);
+    super('IDEMPOTENCY_KEY_EXPIRED', message, 400);
     this.name = 'IdempotencyKeyExpiredError';
   }
 }
@@ -81,7 +83,7 @@ export class IdempotencyKeyExpiredError extends IdempotencyError {
 /** The same key is being processed right now. */
 export class IdempotencyInProgressError extends IdempotencyError {
   constructor(message = 'A request with this idempotency key is already in progress') {
-    super('IDEMPOTENCY_IN_PROGRESS', message);
+    super('IDEMPOTENCY_IN_PROGRESS', message, 409);
     this.name = 'IdempotencyInProgressError';
   }
 }
@@ -91,6 +93,7 @@ export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_STALE_IN_PROGRESS_MS = 30 * 1000;
 
 const STORAGE_PREFIX = 'trellis:idempotency:';
+const ATTEMPT_PREFIX = 'attempt:';
 
 export class MemoryIdempotencyStore implements IdempotencyStore {
   private readonly records = new Map<string, IdempotencyRecord>();
@@ -123,6 +126,42 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
  */
 export class LocalStorageIdempotencyStore implements IdempotencyStore {
   private readonly fallback = new MemoryIdempotencyStore();
+  private evictionInterval: number | null = null;
+
+  constructor() {
+    this.startEvictionWorker();
+  }
+
+  private startEvictionWorker() {
+    if (typeof window === 'undefined') return;
+    this.evictionInterval = window.setInterval(() => this.evictStale(), 60000) as unknown as number;
+  }
+
+  private evictStale() {
+    const storage = this.storage;
+    if (!storage) return;
+    const now = Date.now();
+    const toRemove: string[] = [];
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      if (key?.startsWith(STORAGE_PREFIX) || key?.startsWith(ATTEMPT_PREFIX)) {
+        const raw = storage.getItem(key);
+        if (raw) {
+          try {
+            const record = JSON.parse(raw) as IdempotencyRecord;
+            if (record.expiresAt <= now) {
+              toRemove.push(key);
+            }
+          } catch {
+             toRemove.push(key);
+          }
+        }
+      }
+    }
+    for (const key of toRemove) {
+      storage.removeItem(key);
+    }
+  }
 
   private get storage(): Storage | null {
     try {
@@ -279,37 +318,37 @@ export async function executeIdempotent<T>(
     return (await existingInFlight) as IdempotentRunResult<T>;
   }
 
-  const record = store.get(key);
+  const runLogic = async (): Promise<IdempotentRunResult<T>> => {
+    const record = store.get(key);
 
-  if (record) {
-    if (record.expiresAt <= now()) {
-      throw new IdempotencyKeyExpiredError();
+    if (record) {
+      if (record.expiresAt <= now()) {
+        throw new IdempotencyKeyExpiredError();
+      }
+      if (record.fingerprint !== fingerprint) {
+        throw new IdempotencyConflictError();
+      }
+      if (record.status === 'succeeded') {
+        return { value: record.result as T, replayed: true };
+      }
+      if (record.status === 'in_progress' && now() - record.updatedAt < staleInProgressMs) {
+        // Another tab started this and has not finished; we cannot see its
+        // promise, so refusing is the only way to avoid a second side effect.
+        throw new IdempotencyInProgressError();
+      }
+      // `failed`, or an `in_progress` attempt that went stale: retry.
     }
-    if (record.fingerprint !== fingerprint) {
-      throw new IdempotencyConflictError();
-    }
-    if (record.status === 'succeeded') {
-      return { value: record.result as T, replayed: true };
-    }
-    if (record.status === 'in_progress' && now() - record.updatedAt < staleInProgressMs) {
-      // Another tab started this and has not finished; we cannot see its
-      // promise, so refusing is the only way to avoid a second side effect.
-      throw new IdempotencyInProgressError();
-    }
-    // `failed`, or an `in_progress` attempt that went stale: retry.
-  }
 
-  const startedAt = now();
-  const pending: IdempotencyRecord = {
-    key,
-    fingerprint,
-    status: 'in_progress',
-    createdAt: record?.createdAt ?? startedAt,
-    updatedAt: startedAt,
-    expiresAt: record && record.expiresAt > startedAt ? record.expiresAt : startedAt + ttlMs,
-  };
+    const startedAt = now();
+    const pending: IdempotencyRecord = {
+      key,
+      fingerprint,
+      status: 'in_progress',
+      createdAt: record?.createdAt ?? startedAt,
+      updatedAt: startedAt,
+      expiresAt: record && record.expiresAt > startedAt ? record.expiresAt : startedAt + ttlMs,
+    };
 
-  const run = (async (): Promise<IdempotentRunResult<T>> => {
     store.set(key, pending);
     try {
       const value = await operation();
@@ -329,8 +368,29 @@ export async function executeIdempotent<T>(
       });
       throw error;
     }
-  })();
+  };
 
+  const executeWithLock = async (): Promise<IdempotentRunResult<T>> => {
+    if (typeof navigator !== 'undefined' && navigator.locks) {
+      const lockName = `${STORAGE_PREFIX}${key}`;
+      let lockAcquired = false;
+      const result = await navigator.locks.request(lockName, { ifAvailable: true }, async (lock) => {
+        if (!lock) {
+          return null;
+        }
+        lockAcquired = true;
+        return runLogic();
+      });
+      
+      if (!lockAcquired) {
+        throw new IdempotencyInProgressError();
+      }
+      return result as IdempotentRunResult<T>;
+    }
+    return runLogic();
+  };
+
+  const run = executeWithLock();
   inFlight.set(key, run as Promise<IdempotentRunResult<unknown>>);
   try {
     return await run;
@@ -361,8 +421,6 @@ interface AttemptRecord {
   startedAt: number;
   expiresAt: number;
 }
-
-const ATTEMPT_PREFIX = 'attempt:';
 
 interface AttemptStorage {
   get(key: string): IdempotencyRecord | null;
