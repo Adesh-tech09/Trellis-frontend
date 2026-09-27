@@ -305,6 +305,18 @@ npm run test:watch
 npm run test:coverage
 ```
 
+#### 7. Disaster Recovery Domain Validation
+
+```bash
+# Validate core domain invariants (read-only)
+npm run validate:invariants
+
+# Validate restored snapshot file
+npm run validate:invariants -- --file /path/to/snapshot.json
+
+# See docs/DISASTER_RECOVERY.md for failure interpretation and escalation workflows
+```
+
 ### Docker Setup (Optional)
 
 ```bash
