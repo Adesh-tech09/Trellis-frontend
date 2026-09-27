@@ -1,30 +1,34 @@
 import { z } from 'zod';
-import { evaluatePolicy } from './policy-engine';
+import { evaluatePolicy, type PolicyDecision } from './policy-engine';
 
 /**
  * Scoped maintainer impersonation for support debugging
- * Time-limited, audited sessions with restricted mutations
+ *
+ * Features:
+ * - Time-limited impersonation sessions with configurable durations
+ * - Scope-based permission model (read_only, limited_write, debug)
+ * - Comprehensive audit logging of all actions
+ * - Visible session indicators and status tracking
+ * - Automated session expiration and cleanup
+ * - Policy-driven access control
+ *
+ * Usage:
+ * 1. Admin calls startImpersonation() to create a session
+ * 2. Session is time-limited and scope-restricted
+ * 3. All actions are logged to audit trail
+ * 4. Session auto-expires after configured duration
+ * 5. Sensitive actions blocked based on scope
  */
 
-export interface ImpersonationSession {
-  id: string;
-  adminId: string;
-  targetUserId: string;
-  startedAt: string;
-  expiresAt: string;
-  scope: ImpersonationScope;
-  auditLog: AuditEvent[];
-  isActive: boolean;
-}
-
 export type ImpersonationScope = 'read_only' | 'limited_write' | 'debug';
+export type AuditEventResult = 'success' | 'blocked' | 'error';
 
 export interface AuditEvent {
   id: string;
   timestamp: string;
   action: string;
   resource: string;
-  result: 'success' | 'blocked' | 'error';
+  result: AuditEventResult;
   metadata?: Record<string, unknown>;
 }
 
@@ -37,24 +41,49 @@ export interface ImpersonationPermissions {
   blockedActions: string[];
 }
 
+export interface ImpersonationSession {
+  id: string;
+  adminId: string;
+  targetUserId: string;
+  startedAt: string;
+  expiresAt: string;
+  scope: ImpersonationScope;
+  auditLog: AuditEvent[];
+  isActive: boolean;
+  reason?: string;
+}
+
+export interface SessionMetadata {
+  ipAddress?: string;
+  userAgent?: string;
+  reason?: string;
+}
+
+export const AuditEventSchema = z.object({
+  id: z.string().min(1),
+  timestamp: z.string().datetime(),
+  action: z.string().min(1),
+  resource: z.string().min(1),
+  result: z.enum(['success', 'blocked', 'error']),
+  metadata: z.record(z.unknown()).optional(),
+});
+
 export const ImpersonationSessionSchema = z.object({
-  id: z.string().uuid(),
-  adminId: z.string(),
-  targetUserId: z.string(),
+  id: z.string().min(1),
+  adminId: z.string().min(1),
+  targetUserId: z.string().min(1),
   startedAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
   scope: z.enum(['read_only', 'limited_write', 'debug']),
-  auditLog: z.array(z.object({
-    id: z.string().uuid(),
-    timestamp: z.string().datetime(),
-    action: z.string(),
-    resource: z.string(),
-    result: z.enum(['success', 'blocked', 'error']),
-    metadata: z.record(z.unknown()).optional(),
-  })),
+  auditLog: z.array(AuditEventSchema),
   isActive: z.boolean(),
+  reason: z.string().optional(),
 });
 
+/**
+ * Scope-based permission mappings
+ * Each scope defines what actions are allowed/blocked
+ */
 const scopePermissions: Record<ImpersonationScope, ImpersonationPermissions> = {
   read_only: {
     canRead: true,
@@ -96,22 +125,61 @@ const scopePermissions: Record<ImpersonationScope, ImpersonationPermissions> = {
   },
 };
 
+/**
+ * ImpersonationManager: Handles scoped maintainer impersonation
+ *
+ * Key responsibilities:
+ * - Creating time-limited impersonation sessions
+ * - Validating sessions with policy engine
+ * - Tracking permissions and allowed actions
+ * - Logging all actions to audit trail
+ * - Managing session lifecycle (creation, use, expiration)
+ * - Enforcing scope-based restrictions
+ */
 class ImpersonationManager {
   private sessions: Map<string, ImpersonationSession> = new Map();
+  private sessionsByAdmin: Map<string, Set<string>> = new Map();
+  private sessionsByTarget: Map<string, Set<string>> = new Map();
   private maxDurationMinutes: number = 30;
+  private defaultDurationMinutes: number = 15;
+  private cleanupIntervalMs: number = 5 * 60 * 1000; // 5 minutes
+
+  constructor() {
+    // Periodic cleanup of expired sessions
+    this.startCleanupInterval();
+  }
 
   setMaxDuration(minutes: number): void {
+    if (minutes <= 0) {
+      throw new Error('Max duration must be positive');
+    }
     this.maxDurationMinutes = minutes;
+  }
+
+  setDefaultDuration(minutes: number): void {
+    if (minutes <= 0) {
+      throw new Error('Default duration must be positive');
+    }
+    this.defaultDurationMinutes = minutes;
   }
 
   startSession(
     adminId: string,
     targetUserId: string,
     scope: ImpersonationScope = 'read_only',
-    durationMinutes?: number
+    durationMinutes?: number,
+    metadata?: SessionMetadata
   ): ImpersonationSession {
-    // Validate admin permissions
-    const policyDecision = evaluatePolicy({
+    if (!adminId || !targetUserId) {
+      throw new Error('Admin ID and Target User ID are required');
+    }
+
+    if (adminId === targetUserId) {
+      throw new Error('Cannot impersonate yourself');
+    }
+
+    // Validate admin permissions through policy engine
+    const policyDecision: PolicyDecision = evaluatePolicy({
       actor: {
         id: adminId,
         role: 'admin',
@@ -130,30 +198,55 @@ class ImpersonationManager {
     }
 
     const now = new Date();
-    const duration = Math.min(durationMinutes || this.maxDurationMinutes, this.maxDurationMinutes);
+    const requestedDuration = durationMinutes || this.defaultDurationMinutes;
+    const duration = Math.min(requestedDuration, this.maxDurationMinutes);
     const expiresAt = new Date(now.getTime() + duration * 60 * 1000);
 
+    const sessionId = this.generateSessionId();
     const session: ImpersonationSession = {
-      id: this.generateId(),
+      id: sessionId,
       adminId,
       targetUserId,
       startedAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
       scope,
-      auditLog: [
-        {
-          id: this.generateId(),
-          timestamp: now.toISOString(),
-          action: 'session_started',
-          resource: `user:${targetUserId}`,
-          result: 'success',
-          metadata: { scope, durationMinutes: duration },
-        },
-      ],
+      auditLog: [],
       isActive: true,
+      reason: metadata?.reason,
     };
 
-    this.sessions.set(session.id, session);
+    // Log session start
+    session.auditLog.push({
+      id: this.generateEventId(),
+      timestamp: now.toISOString(),
+      action: 'session_started',
+      resource: `user:${targetUserId}`,
+      result: 'success',
+      metadata: {
+        scope,
+        durationMinutes: duration,
+        ipAddress: metadata?.ipAddress,
+      },
+    });
+
+    // Validate session schema
+    try {
+      ImpersonationSessionSchema.parse(session);
+    } catch (error) {
+      throw new Error(`Failed to create session: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    this.sessions.set(sessionId, session);
+
+    // Track by admin and target
+    const adminSessions = this.sessionsByAdmin.get(adminId) || new Set();
+    adminSessions.add(sessionId);
+    this.sessionsByAdmin.set(adminId, adminSessions);
+
+    const targetSessions = this.sessionsByTarget.get(targetUserId) || new Set();
+    targetSessions.add(sessionId);
+    this.sessionsByTarget.set(targetUserId, targetSessions);
+
     return session;
   }
 
@@ -165,7 +258,7 @@ class ImpersonationManager {
 
     session.isActive = false;
     session.auditLog.push({
-      id: this.generateId(),
+      id: this.generateEventId(),
       timestamp: new Date().toISOString(),
       action: 'session_ended',
       resource: `user:${session.targetUserId}`,
@@ -178,10 +271,9 @@ class ImpersonationManager {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
-    // Check if session is expired
-    if (new Date(session.expiresAt) < new Date()) {
+    // Mark as expired if needed
+    if (this.isExpired(session)) {
       session.isActive = false;
-      return session;
     }
 
     return session;
@@ -190,18 +282,16 @@ class ImpersonationManager {
   isSessionActive(sessionId: string): boolean {
     const session = this.getSession(sessionId);
     if (!session) return false;
-
-    const now = new Date();
-    const isExpired = new Date(session.expiresAt) < now;
-
-    return session.isActive && !isExpired;
+    return session.isActive && !this.isExpired(session);
   }
 
   canPerformAction(sessionId: string, action: string): boolean {
-    const session = this.getSession(sessionId);
-    if (!session || !this.isSessionActive(sessionId)) {
+    if (!this.isSessionActive(sessionId)) {
       return false;
     }
+
+    const session = this.getSession(sessionId);
+    if (!session) return false;
 
     const permissions = scopePermissions[session.scope];
     const isAllowed = permissions.allowedActions.includes(action);
@@ -214,14 +304,16 @@ class ImpersonationManager {
     sessionId: string,
     action: string,
     resource: string,
-    result: 'success' | 'blocked' | 'error',
+    result: AuditEventResult,
     metadata?: Record<string, unknown>
   ): void {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      throw new Error('Session not found');
+    }
 
     session.auditLog.push({
-      id: this.generateId(),
+      id: this.generateEventId(),
       timestamp: new Date().toISOString(),
       action,
       resource,
@@ -233,34 +325,39 @@ class ImpersonationManager {
   getPermissions(sessionId: string): ImpersonationPermissions | null {
     const session = this.getSession(sessionId);
     if (!session) return null;
-
-    return scopePermissions[session.scope];
+    return { ...scopePermissions[session.scope] };
   }
 
   getAuditLog(sessionId: string): AuditEvent[] {
     const session = this.getSession(sessionId);
     if (!session) return [];
-
     return [...session.auditLog];
   }
 
   getActiveSessions(): ImpersonationSession[] {
-    return Array.from(this.sessions.values()).filter(
-      (session) => this.isSessionActive(session.id)
+    return Array.from(this.sessions.values()).filter((session) =>
+      this.isSessionActive(session.id)
     );
   }
 
   getSessionsForAdmin(adminId: string): ImpersonationSession[] {
-    return Array.from(this.sessions.values()).filter(
-      (session) => session.adminId === adminId
-    );
+    const sessionIds = this.sessionsByAdmin.get(adminId) || new Set();
+    return Array.from(sessionIds)
+      .map((id) => this.getSession(id))
+      .filter((s): s is ImpersonationSession => s !== null);
+  }
+
+  getSessionsForTarget(targetUserId: string): ImpersonationSession[] {
+    const sessionIds = this.sessionsByTarget.get(targetUserId) || new Set();
+    return Array.from(sessionIds)
+      .map((id) => this.getSession(id))
+      .filter((s): s is ImpersonationSession => s !== null);
   }
 
   validateSession(sessionId: string): boolean {
     try {
       const session = this.getSession(sessionId);
       if (!session) return false;
-
       ImpersonationSessionSchema.parse(session);
       return this.isSessionActive(sessionId);
     } catch {
@@ -268,34 +365,85 @@ class ImpersonationManager {
     }
   }
 
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) +
-           Math.random().toString(36).substring(2, 15);
-  }
-
-  clearExpiredSessions(): void {
+  clearExpiredSessions(): number {
     const now = new Date();
-    const expired: string[] = [];
+    let cleared = 0;
 
+    const expiredIds: string[] = [];
     this.sessions.forEach((session, id) => {
-      if (new Date(session.expiresAt) < now) {
-        expired.push(id);
+      if (this.isExpired(session)) {
+        expiredIds.push(id);
       }
     });
 
-    expired.forEach((id) => this.sessions.delete(id));
+    expiredIds.forEach((id) => {
+      const session = this.sessions.get(id);
+      if (session) {
+        // Remove from tracking maps
+        const adminSessions = this.sessionsByAdmin.get(session.adminId);
+        if (adminSessions) {
+          adminSessions.delete(id);
+        }
+
+        const targetSessions = this.sessionsByTarget.get(session.targetUserId);
+        if (targetSessions) {
+          targetSessions.delete(id);
+        }
+
+        this.sessions.delete(id);
+        cleared += 1;
+      }
+    });
+
+    return cleared;
+  }
+
+  getAllSessions(): ImpersonationSession[] {
+    return Array.from(this.sessions.values());
+  }
+
+  getSessionStats(): { active: number; total: number; expired: number } {
+    const sessions = Array.from(this.sessions.values());
+    return {
+      active: sessions.filter((s) => this.isSessionActive(s.id)).length,
+      total: sessions.length,
+      expired: sessions.filter((s) => this.isExpired(s)).length,
+    };
+  }
+
+  private isExpired(session: ImpersonationSession): boolean {
+    return new Date(session.expiresAt) < new Date();
+  }
+
+  private generateSessionId(): string {
+    return `sess_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+  }
+
+  private generateEventId(): string {
+    return `evt_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+  }
+
+  private startCleanupInterval(): void {
+    if (typeof setInterval !== 'undefined') {
+      setInterval(() => {
+        this.clearExpiredSessions();
+      }, this.cleanupIntervalMs);
+    }
   }
 }
 
 export const impersonationManager = new ImpersonationManager();
 
+// Exported helper functions
+
 export function startImpersonation(
   adminId: string,
   targetUserId: string,
   scope?: ImpersonationScope,
-  durationMinutes?: number
+  durationMinutes?: number,
+  metadata?: SessionMetadata
 ): ImpersonationSession {
-  return impersonationManager.startSession(adminId, targetUserId, scope, durationMinutes);
+  return impersonationManager.startSession(adminId, targetUserId, scope, durationMinutes, metadata);
 }
 
 export function endImpersonation(sessionId: string, reason?: string): void {
@@ -312,4 +460,30 @@ export function getImpersonationSession(sessionId: string): ImpersonationSession
 
 export function canPerformActionInImpersonation(sessionId: string, action: string): boolean {
   return impersonationManager.canPerformAction(sessionId, action);
+}
+
+export function recordImpersonationAction(
+  sessionId: string,
+  action: string,
+  resource: string,
+  result: AuditEventResult,
+  metadata?: Record<string, unknown>
+): void {
+  impersonationManager.recordAction(sessionId, action, resource, result, metadata);
+}
+
+export function getImpersonationAuditLog(sessionId: string): AuditEvent[] {
+  return impersonationManager.getAuditLog(sessionId);
+}
+
+export function getActiveSessions(): ImpersonationSession[] {
+  return impersonationManager.getActiveSessions();
+}
+
+export function getSessionsForAdmin(adminId: string): ImpersonationSession[] {
+  return impersonationManager.getSessionsForAdmin(adminId);
+}
+
+export function getSessionsForTarget(targetUserId: string): ImpersonationSession[] {
+  return impersonationManager.getSessionsForTarget(targetUserId);
 }
