@@ -1,22 +1,48 @@
 interface CacheConfig {
   name: string;
   version: string;
-  maxAge: number; // in seconds
+  maxAge: number;
   maxEntries: number;
+  maxSizeBytes?: number;
 }
 
 interface CacheEntry {
   url: string;
   timestamp: number;
+  lastAccessed: number;
   response: Response;
+  sizeBytes: number;
 }
+
+interface StorageQuota {
+  usage: number;
+  quota: number;
+  percentage: number;
+}
+
+const STORAGE_QUOTA_THRESHOLD = 0.8;
+const QUOTA_CHECK_INTERVAL_MS = 30000;
 
 class CacheManager {
   private static instance: CacheManager;
   private cacheConfigs: Map<string, CacheConfig> = new Map();
+  private lruOrder: Map<string, number> = new Map();
+  private accessCounter: number = 0;
+  private quotaTimer: ReturnType<typeof setInterval> | null = null;
+  private storageQuota: StorageQuota | null = null;
+
+  public onQuotaExceeded: ((quota: StorageQuota) => void) | null = null;
 
   private constructor() {
     this.initializeCacheConfigs();
+    this.startQuotaMonitoring();
+  }
+
+  public destroy(): void {
+    if (this.quotaTimer) {
+      clearInterval(this.quotaTimer);
+      this.quotaTimer = null;
+    }
   }
 
   public static getInstance(): CacheManager {
@@ -30,30 +56,126 @@ class CacheManager {
     this.cacheConfigs.set('static', {
       name: 'Trellis-static',
       version: 'v1.0.0',
-      maxAge: 30 * 24 * 60 * 60, // 30 days
+      maxAge: 30 * 24 * 60 * 60,
       maxEntries: 200,
+      maxSizeBytes: 50 * 1024 * 1024,
     });
 
     this.cacheConfigs.set('api', {
       name: 'Trellis-api',
       version: 'v1.0.0',
-      maxAge: 24 * 60 * 60, // 24 hours
+      maxAge: 24 * 60 * 60,
       maxEntries: 100,
+      maxSizeBytes: 20 * 1024 * 1024,
     });
 
     this.cacheConfigs.set('images', {
       name: 'Trellis-images',
       version: 'v1.0.0',
-      maxAge: 90 * 24 * 60 * 60, // 90 days
+      maxAge: 90 * 24 * 60 * 60,
       maxEntries: 500,
+      maxSizeBytes: 100 * 1024 * 1024,
     });
 
     this.cacheConfigs.set('fonts', {
       name: 'Trellis-fonts',
       version: 'v1.0.0',
-      maxAge: 365 * 24 * 60 * 60, // 1 year
+      maxAge: 365 * 24 * 60 * 60,
       maxEntries: 50,
+      maxSizeBytes: 10 * 1024 * 1024,
     });
+  }
+
+  private startQuotaMonitoring(): void {
+    if (typeof window === 'undefined' || !navigator.storage || !navigator.storage.estimate) {
+      return;
+    }
+
+    this.checkStorageQuota();
+    this.quotaTimer = setInterval(() => this.checkStorageQuota(), QUOTA_CHECK_INTERVAL_MS);
+  }
+
+  private async checkStorageQuota(): Promise<void> {
+    try {
+      const estimate = await navigator.storage.estimate();
+      const usage = (estimate.usage || 0) as number;
+      const quota = (estimate.quota || 1) as number;
+      const percentage = quota > 0 ? usage / quota : 0;
+
+      this.storageQuota = { usage, quota, percentage };
+
+      if (percentage >= STORAGE_QUOTA_THRESHOLD) {
+        await this.evictCacheForQuota();
+        if (this.onQuotaExceeded) {
+          this.onQuotaExceeded(this.storageQuota);
+        }
+      }
+    } catch (error) {
+      console.warn('[Cache Manager] Failed to check storage quota:', error);
+    }
+  }
+
+  private async evictCacheForQuota(): Promise<void> {
+    for (const [type, config] of this.cacheConfigs) {
+      const cache = await caches.open(config.name);
+      const keys = await cache.keys();
+      if (keys.length === 0) continue;
+
+      const lruSorted = this.getLRUSortedKeys(type, keys);
+      const entriesToRemove = lruSorted.slice(0, Math.ceil(keys.length * 0.2));
+      for (const request of entriesToRemove) {
+        await cache.delete(request);
+        this.lruOrder.delete(`${type}:${request.url}`);
+      }
+    }
+  }
+
+  private getLRUSortedKeys(type: string, keys: Request[]): Request[] {
+    return keys.sort((a, b) => {
+      const aAccess = this.lruOrder.get(`${type}:${a.url}`) || 0;
+      const bAccess = this.lruOrder.get(`${type}:${b.url}`) || 0;
+      return aAccess - bAccess;
+    });
+  }
+
+  private recordAccess(type: string, url: string): void {
+    this.accessCounter++;
+    this.lruOrder.set(`${type}:${url}`, this.accessCounter);
+  }
+
+  public async getStorageQuota(): Promise<StorageQuota | null> {
+    if (!navigator.storage || !navigator.storage.estimate) {
+      return null;
+    }
+    try {
+      const estimate = await navigator.storage.estimate();
+      const usage = (estimate.usage || 0) as number;
+      const quota = (estimate.quota || 1) as number;
+      return { usage, quota, percentage: quota > 0 ? usage / quota : 0 };
+    } catch {
+      return null;
+    }
+  }
+
+  public async pruneCache(type: string): Promise<number> {
+    const config = this.cacheConfigs.get(type);
+    if (!config) return 0;
+
+    const cache = await caches.open(config.name);
+    const keys = await cache.keys();
+    let pruned = 0;
+
+    const lruSorted = this.getLRUSortedKeys(type, keys);
+    const halfCount = Math.ceil(keys.length / 2);
+    for (const request of lruSorted.slice(0, halfCount)) {
+      const deleted = await cache.delete(request);
+      if (deleted) {
+        this.lruOrder.delete(`${type}:${request.url}`);
+        pruned++;
+      }
+    }
+
+    return pruned;
   }
 
   public async getCacheKey(type: string, url: string): Promise<string> {
@@ -72,12 +194,11 @@ class CacheManager {
 
     const cache = await caches.open(config.name);
     const cacheKey = await this.getCacheKey(type, request.url);
-    
-    // Add timestamp to response headers for age checking
+
     const responseClone = response.clone();
     const headers = new Headers(responseClone.headers);
     headers.set('sw-cached-at', Date.now().toString());
-    
+
     const modifiedResponse = new Response(responseClone.body, {
       status: responseClone.status,
       statusText: responseClone.statusText,
@@ -85,8 +206,7 @@ class CacheManager {
     });
 
     await cache.put(request, modifiedResponse);
-    
-    // Clean up old entries if cache is full
+    this.recordAccess(type, request.url);
     await this.cleanupCache(config.name, config.maxEntries);
   }
 
@@ -98,17 +218,16 @@ class CacheManager {
 
     const cache = await caches.open(config.name);
     const cachedResponse = await cache.match(request);
-    
+    this.recordAccess(type, request.url);
+
     if (!cachedResponse) {
       return null;
     }
 
-    // Check if cache entry is still valid
     const cachedAt = cachedResponse.headers.get('sw-cached-at');
     if (cachedAt) {
       const cacheAge = (Date.now() - parseInt(cachedAt)) / 1000;
       if (cacheAge > config.maxAge) {
-        // Cache is expired, remove it
         await cache.delete(request);
         return null;
       }
@@ -158,7 +277,6 @@ class CacheManager {
             newestEntry = Math.max(newestEntry, timestamp);
           }
           
-          // Estimate size (rough calculation)
           const responseClone = response.clone();
           const text = await responseClone.text();
           totalSize += text.length;
@@ -170,9 +288,15 @@ class CacheManager {
         entries: keys.length,
         maxEntries: config.maxEntries,
         estimatedSize: totalSize,
+        maxSizeBytes: config.maxSizeBytes,
         oldestEntry: oldestEntry === Date.now() ? null : new Date(oldestEntry),
         newestEntry: newestEntry === 0 ? null : new Date(newestEntry),
+        lruOrderLength: this.lruOrder.size,
       };
+    }
+    
+    if (this.storageQuota) {
+      stats.storageQuota = this.storageQuota;
     }
     
     return stats;
@@ -181,32 +305,16 @@ class CacheManager {
   private async cleanupCache(cacheName: string, maxEntries: number): Promise<void> {
     const cache = await caches.open(cacheName);
     const keys = await cache.keys();
-    
+
     if (keys.length <= maxEntries) {
       return;
     }
-    
-    // Sort by timestamp (oldest first)
-    const entries: CacheEntry[] = [];
-    
-    for (const request of keys) {
-      const response = await cache.match(request);
-      if (response) {
-        const cachedAt = response.headers.get('sw-cached-at');
-        entries.push({
-          url: request.url,
-          timestamp: cachedAt ? parseInt(cachedAt) : 0,
-          response: response,
-        });
-      }
-    }
-    
-    entries.sort((a, b) => a.timestamp - b.timestamp);
-    
-    // Remove oldest entries
-    const entriesToRemove = entries.slice(0, entries.length - maxEntries);
-    for (const entry of entriesToRemove) {
-      await cache.delete(new Request(entry.url));
+
+    const lruSorted = this.getLRUSortedKeys(cacheName, keys);
+    const entriesToRemove = lruSorted.slice(0, keys.length - maxEntries);
+    for (const request of entriesToRemove) {
+      await cache.delete(request);
+      this.lruOrder.delete(`${cacheName}:${request.url}`);
     }
   }
 
@@ -446,12 +554,11 @@ class CacheManager {
   }
 
   public async updateCacheVersion(newVersion: string): Promise<void> {
-    // Update all cache configurations with new version
     for (const config of this.cacheConfigs.values()) {
       config.version = newVersion;
     }
+    this.lruOrder.clear();
 
-    // Clear old caches
     const cacheNames = await caches.keys();
     const oldCaches = cacheNames.filter(name => 
       name.startsWith('Trellis-') && !name.includes(newVersion)

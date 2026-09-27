@@ -2,6 +2,7 @@
 
 import { NotificationSettings } from '@/components/NotificationSettings';
 import { NotificationDemo } from '@/components/NotificationDemo';
+import { NotificationPreferencePanel } from '@/components/notifications/NotificationPreferencePanel';
 
 export default function NotificationSettingsPage() {
   return (
@@ -16,6 +17,10 @@ export default function NotificationSettingsPage() {
 
         <NotificationSettings className="mb-8" />
         
+        <div className="mb-8">
+          <NotificationPreferencePanel />
+        </div>
+
         <div className="mb-8">
           <NotificationDemo />
         </div>
