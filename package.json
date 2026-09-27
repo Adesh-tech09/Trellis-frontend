@@ -25,6 +25,8 @@
     "@emotion/cache": "^11.14.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
+    "@ledgerhq/hw-app-str": "^7.7.7",
+    "@ledgerhq/hw-transport-webhid": "^6.36.0",
     "@mui/icons-material": "^9.0.0",
     "@mui/material": "^9.0.0",
     "@stellar/freighter-api": "^6.0.0",
