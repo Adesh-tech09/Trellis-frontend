@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runImportPipeline } from '@/lib/import/pipeline';
 import { ImportOptions } from '@/lib/import/types';
+import { checkRateLimit, createRateLimitResponse } from '@/lib/security/rate-limit';
+
+const IMPORT_RATE_LIMIT = { maxRequests: 10, windowMs: 15 * 60 * 1000, scope: 'import' };
 
 /**
  * POST /api/import
  * Execute bulk import pipeline with validation, idempotency, duplicate detection, and rollback guidance.
  */
 export async function POST(request: NextRequest) {
+  const rl = checkRateLimit(request, IMPORT_RATE_LIMIT);
+  if (rl.blocked) {
+    return createRateLimitResponse(rl, 'Import rate limit exceeded. Please try again later.');
+  }
+
   try {
     const contentType = request.headers.get('content-type') || '';
     const { searchParams } = new URL(request.url);
