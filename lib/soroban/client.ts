@@ -67,13 +67,18 @@ export class SorobanContract {
     }
 
     /**
-     * Prepare a transaction for invocation (State-changing)
+     * Pre-flight contract transaction simulation to validate execution and estimate resources
      */
-    async prepareInvoke(
+    async simulateTransaction(
         functionName: string,
         args: any[],
         publicKey: string
-    ): Promise<{ transaction: StellarSdk.Transaction; metrics: ResourceMetrics }> {
+    ): Promise<{
+        transaction: StellarSdk.Transaction;
+        metrics: ResourceMetrics;
+        simulationResponse: any;
+        minResourceFee: number;
+    }> {
         try {
             const server = new StellarSdk.Horizon.Server(STELLAR_NETWORKS[this.network].horizonUrl);
             const account = await server.loadAccount(publicKey);
@@ -89,37 +94,98 @@ export class SorobanContract {
             const simulationResponse = await this.server.simulateTransaction(tx);
 
             if (!(StellarSdk as any).rpc.Api.isSimulationSuccess(simulationResponse)) {
-                throw new Error("Simulation failed for invoke");
+                const errorMsg = decodeSimulationError(simulationResponse);
+                throw new Error(`Simulation failed: ${errorMsg}`);
             }
 
             // Assemble the full transaction with simulation results
             tx = (StellarSdk as any).rpc.assembleTransaction(tx, simulationResponse).build();
+            const metrics = this.extractMetrics(simulationResponse);
+            const minResourceFee = Number(simulationResponse.minResourceFee || 0);
 
             return {
                 transaction: tx,
-                metrics: this.extractMetrics(simulationResponse),
+                metrics,
+                simulationResponse,
+                minResourceFee,
             };
         } catch (error) {
-            console.error(`Error in prepareInvoke (${functionName}):`, error);
+            console.error(`Error in simulateTransaction (${functionName}):`, error);
             throw error;
         }
     }
 
     /**
-   * Helper to extract resource metrics from simulation response
-   */
-    private extractMetrics(response: any): ResourceMetrics {
-        const minFee = Number(response.minResourceFee || 0);
-        const cost = response.cost || {};
+     * Prepare a transaction for invocation (State-changing)
+     */
+    async prepareInvoke(
+        functionName: string,
+        args: any[],
+        publicKey: string
+    ): Promise<{ transaction: StellarSdk.Transaction; metrics: ResourceMetrics; minResourceFee?: number }> {
+        const result = await this.simulateTransaction(functionName, args, publicKey);
+        return {
+            transaction: result.transaction,
+            metrics: result.metrics,
+            minResourceFee: result.minResourceFee,
+        };
+    }
+
+    /**
+     * Helper to extract resource metrics from simulation response
+     */
+    public extractMetrics(response: any): ResourceMetrics {
+        const minFee = Number(response?.minResourceFee || 0);
+        const cost = response?.cost || {};
+
+        let ledgerReadBytes = 0;
+        let ledgerWriteBytes = 0;
+        let readCount = 0;
+        let writeCount = 0;
+
+        try {
+            let txData = response?.transactionData;
+            if (typeof txData === "string" && (StellarSdk as any).xdr?.SorobanTransactionData) {
+                try {
+                    txData = (StellarSdk as any).xdr.SorobanTransactionData.fromXDR(txData, "base64");
+                } catch {
+                    // Ignore decoding error if mock or invalid XDR
+                }
+            }
+
+            if (txData && typeof txData.resources === "function") {
+                const res = txData.resources();
+                if (res) {
+                    if (typeof res.readBytes === "function") ledgerReadBytes = Number(res.readBytes());
+                    if (typeof res.writeBytes === "function") ledgerWriteBytes = Number(res.writeBytes());
+                    const footprint = typeof res.footprint === "function" ? res.footprint() : null;
+                    if (footprint) {
+                        if (typeof footprint.readOnly === "function") readCount = footprint.readOnly().length;
+                        if (typeof footprint.readWrite === "function") writeCount = footprint.readWrite().length;
+                    }
+                }
+            } else if (txData && txData.resources) {
+                const res = txData.resources;
+                ledgerReadBytes = Number(res.readBytes || 0);
+                ledgerWriteBytes = Number(res.writeBytes || 0);
+                if (res.footprint) {
+                    readCount = res.footprint.readOnly?.length || 0;
+                    writeCount = res.footprint.readWrite?.length || 0;
+                }
+            }
+        } catch (e) {
+            // Fallback gracefully on parsing errors
+        }
 
         return {
             cpuInstructions: Number(cost.cpuInsns || 0),
             ramBytes: Number(cost.memBytes || 0),
-            ledgerReadBytes: 0, // Footprint details would require deeper parsing of transactionData
-            ledgerWriteBytes: 0,
-            readCount: 0,
-            writeCount: 0,
+            ledgerReadBytes,
+            ledgerWriteBytes,
+            readCount,
+            writeCount,
             costXlm: (minFee / 10000000).toFixed(7),
+            minResourceFee: String(minFee),
         };
     }
 
@@ -130,6 +196,27 @@ export class SorobanContract {
         // If we have a spec, we could do more advanced mapping here
         return args.map(arg => StellarSdk.nativeToScVal(arg));
     }
+}
+
+/**
+ * Decodes simulation error response from Soroban RPC into a human-readable string
+ */
+export function decodeSimulationError(response: any): string {
+    if (!response) return "Unknown simulation error";
+    if (typeof response === "string") return response;
+    if (response.error) {
+        return typeof response.error === "string" ? response.error : JSON.stringify(response.error);
+    }
+    if (Array.isArray(response.results) && response.results.length > 0) {
+        const first = response.results[0];
+        if (first.error) {
+            return typeof first.error === "string" ? first.error : JSON.stringify(first.error);
+        }
+        if (first.xdr) {
+            return `Contract execution error (XDR: ${first.xdr})`;
+        }
+    }
+    return "Transaction simulation failed pre-flight check";
 }
 
 /**
