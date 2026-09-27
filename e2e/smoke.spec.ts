@@ -36,6 +36,21 @@ const IGNORED_CONSOLE_PATTERNS = [
   /net::ERR/i,
 ];
 
+/**
+ * Every route is smoke tested on the desktop engines. The touch/mobile projects
+ * run the subset that matters on a phone - loading all 22 routes five times
+ * would dominate CI without adding much, since rendering differences in the
+ * shared layout are covered by `viewport.spec.ts` instead.
+ */
+const MOBILE_ROUTE_SUBSET = [
+  '/',
+  '/marketplace',
+  '/learn',
+  '/governance',
+  '/bug-report',
+  '/dashboard',
+];
+
 function isIgnoredError(message: string): boolean {
   return IGNORED_CONSOLE_PATTERNS.some((pattern) => pattern.test(message));
 }
@@ -58,7 +73,14 @@ async function collectPageErrors(page: Page): Promise<string[]> {
 
 test.describe('route smoke tests', () => {
   for (const route of ROUTES) {
-    test(`${route} renders without crashing`, async ({ page }) => {
+    test(`${route} renders without crashing`, async ({ page }, testInfo) => {
+      const isTouchProject = testInfo.project.use.hasTouch === true;
+
+      test.skip(
+        isTouchProject && !MOBILE_ROUTE_SUBSET.includes(route),
+        `touch projects smoke test ${MOBILE_ROUTE_SUBSET.length} of ${ROUTES.length} routes`,
+      );
+
       const errors = await collectPageErrors(page);
       const response = await page.goto(route, { waitUntil: 'load' });
 
