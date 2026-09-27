@@ -2,7 +2,7 @@ import type { StellarNetwork } from '../types';
 
 export type ProposalType = 'upgrade_agent' | 'update_params' | 'treasury_spend';
 
-export type ProposalStatus = 'pending' | 'active' | 'failed' | 'executed' | 'expired';
+export type ProposalStatus = 'pending' | 'active' | 'failed' | 'queued' | 'executed' | 'expired';
 
 export interface GovernanceConfig {
   network: StellarNetwork;
@@ -55,6 +55,7 @@ export interface Proposal {
   rejections: number;
   abstentions: number;
   totalVotingPowerAtCreation: number;
+  executionEta?: string; // ETA when timelock expires
 }
 
 export type VoteChoice = 'approve' | 'reject' | 'abstain';

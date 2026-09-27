@@ -266,6 +266,27 @@ export function getDelegationFromSigner(
   signer: StellarSdk.xdr.Signer
 ): Delegation | null {
   if (!signer.key()?.switch()?.name || !signer.weight()) return null;
-  return null;
+  return null; // Mock implementation
+}
+
+export function isTimelockExpired(proposal: Proposal): boolean {
+  if (!proposal.executionEta) return false;
+  return Date.now() >= new Date(proposal.executionEta).getTime();
+}
+
+export function calculateDelegatedVotingPower(
+  accountId: string,
+  delegations: Delegation[],
+  accountBalances: Record<string, number>
+): number {
+  let power = accountBalances[accountId] || 0;
+  
+  // Add power from accounts that delegated to this account
+  for (const del of delegations) {
+    if (del.delegate === accountId) {
+      power += accountBalances[del.delegator] || 0;
+    }
+  }
+  return power;
 }
 
