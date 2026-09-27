@@ -8,7 +8,7 @@ on:
 jobs:
   playwright:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -23,8 +23,37 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright smoke tests
-        run: npm run test:e2e
+      - name: Run Playwright smoke and journey tests
+        run: npx playwright test e2e/smoke.spec.ts e2e/journey.spec.ts
+
+      - name: Run accessibility audits (axe-core, WCAG A/AA)
+        run: npm run test:e2e:a11y
+
+      # Visual baselines are committed under e2e/__screenshots__/. On the first
+      # run after this workflow lands there are none yet, so they are generated
+      # and uploaded as an artifact instead of failing the build.
+      - name: Check for visual baselines
+        id: visual-baseline
+        run: |
+          if [ -d e2e/__screenshots__ ]; then
+            echo "have_baseline=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_baseline=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No visual baselines committed yet — generating them and uploading as an artifact."
+            npm run test:e2e:visual:update
+          fi
+
+      - name: Run visual regression tests
+        if: steps.visual-baseline.outputs.have_baseline == 'true'
+        run: npm run test:e2e:visual
+
+      - name: Upload generated visual baselines
+        uses: actions/upload-artifact@v4
+        if: steps.visual-baseline.outputs.have_baseline == 'false'
+        with:
+          name: playwright-visual-baselines
+          path: e2e/__screenshots__/
+          retention-days: 14
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

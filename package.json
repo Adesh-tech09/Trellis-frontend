@@ -13,6 +13,9 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:e2e": "playwright test",
+    "test:e2e:a11y": "playwright test e2e/a11y.spec.ts",
+    "test:e2e:visual": "playwright test e2e/visual.spec.ts",
+    "test:e2e:visual:update": "playwright test e2e/visual.spec.ts --update-snapshots",
     "diagnostics": "node scripts/diagnostics.mjs",
     "telemetry:ws": "node scripts/telemetry-ws-server.mjs",
     "analyze": "source-map-explorer .next/static/**/*.js",
@@ -53,6 +56,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
     "@playwright/test": "^1.49.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^14.0.0",
