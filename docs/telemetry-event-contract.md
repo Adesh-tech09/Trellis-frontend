@@ -33,3 +33,14 @@ The telemetry sanitizer removes sensitive keys and redacts obvious email and lon
 ## Dashboard Queries
 
 The primary operational views should group by `type`, `severity`, `taskKind`, `state`, and `code` only. These bounded dimensions support failure-rate and conversion analysis without creating a high-cardinality or personally identifying metric stream.
+
+## Transports
+
+The dashboard prefers an unordered, unreliable WebRTC data channel (`ordered: false`, `maxRetransmits: 0`) because a
+stale metric tick must never delay the ticks behind it. The existing WebSocket stream remains the transport whenever
+WebRTC is unsupported, ICE does not complete, or no producer peer is connected, so the event contract above is
+identical on both paths.
+
+Connection state, the active transport, and the reason for any fallback are exposed by `useTelemetryStream` (and its
+`useTelemetryWebSocket` compatibility wrapper). Configuration lives in `NEXT_PUBLIC_TELEMETRY_WEBRTC`,
+`NEXT_PUBLIC_TELEMETRY_STUN_URLS`, `NEXT_PUBLIC_TELEMETRY_TURN_URL`, and `NEXT_PUBLIC_TELEMETRY_ICE_SERVERS`.
