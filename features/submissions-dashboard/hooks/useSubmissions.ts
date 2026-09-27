@@ -9,6 +9,46 @@ interface UseSubmissionsResult {
 }
 
 import { scanSubmissionContent } from "../utils/scanner";
+import { DependencyLicense, scanDependencyLicenses } from "../utils/licenseScanner";
+
+function getDependencies(item: Record<string, unknown>): DependencyLicense[] {
+  const manifest = item.packageJson ?? item.packageJSON;
+  let manifestDependencies: unknown;
+  if (typeof manifest === "string") {
+    try {
+      const parsed = JSON.parse(manifest) as Record<string, unknown>;
+      manifestDependencies = parsed.dependencies;
+    } catch {
+      manifestDependencies = undefined;
+    }
+  } else if (typeof manifest === "object" && manifest !== null) {
+    manifestDependencies = (manifest as Record<string, unknown>).dependencies;
+  }
+
+  const rawDependencies = item.dependencies ?? item.packages ?? manifestDependencies;
+  if (Array.isArray(rawDependencies)) {
+    return rawDependencies.flatMap((dependency, index) => {
+      if (typeof dependency === "string") return [{ name: dependency }];
+      if (typeof dependency !== "object" || dependency === null) return [];
+      const value = dependency as Record<string, unknown>;
+      const name = String(value.name ?? value.package ?? value.id ?? `Dependency ${index + 1}`);
+      const license = value.license ?? value.licenseExpression ?? value.spdx;
+      return [{ name, license: typeof license === "string" ? license : undefined }];
+    });
+  }
+
+  if (typeof rawDependencies === "object" && rawDependencies !== null) {
+    return Object.entries(rawDependencies as Record<string, unknown>).map(([name, value]) => {
+      if (typeof value === "string") return { name };
+      if (typeof value !== "object" || value === null) return { name };
+      const metadata = value as Record<string, unknown>;
+      const license = metadata.license ?? metadata.licenseExpression ?? metadata.spdx;
+      return { name, license: typeof license === "string" ? license : undefined };
+    });
+  }
+
+  return [];
+}
 
 const normalizeSubmission = (input: unknown): Submission | null => {
   if (typeof input !== "object" || input === null) {
@@ -28,6 +68,7 @@ const normalizeSubmission = (input: unknown): Submission | null => {
   // Extract content, default to empty string if missing
   const content = String(item.content ?? item.code ?? item.description ?? "");
   const securityScan = scanSubmissionContent(content);
+  const licenseAudit = scanDependencyLicenses(getDependencies(item));
 
   if (!id || !txHash) {
     return null;
@@ -40,6 +81,7 @@ const normalizeSubmission = (input: unknown): Submission | null => {
     timestamp,
     content,
     securityScan,
+    licenseAudit,
   };
 
   if (error) {
