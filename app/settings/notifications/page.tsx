@@ -2,6 +2,7 @@
 
 import { NotificationSettings } from '@/components/NotificationSettings';
 import { NotificationDemo } from '@/components/NotificationDemo';
+import { AlertPreferencesPanel } from '@/components/notifications/AlertPreferencesPanel';
 import { NotificationPreferencePanel } from '@/components/notifications/NotificationPreferencePanel';
 
 export default function NotificationSettingsPage() {
