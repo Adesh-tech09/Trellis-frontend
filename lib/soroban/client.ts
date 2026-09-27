@@ -7,6 +7,7 @@ import {
 } from "../types";
 import { STELLAR_NETWORKS } from "../stellar-constants";
 import { specLoader } from "./spec";
+import { serializeSorobanValue } from "./values";
 
 /**
  * Robust Soroban contract interaction client
@@ -127,7 +128,10 @@ export class SorobanContract {
      * Internal helper to map args based on spec (if available) or native conversion
      */
     private prepareArgs(functionName: string, args: any[]): StellarSdk.xdr.ScVal[] {
-        // If we have a spec, we could do more advanced mapping here
+        const fn = this.spec?.fns.find((candidate) => candidate.name === functionName);
+        if (fn && fn.args.length === args.length) {
+            return fn.args.map((arg, index) => serializeSorobanValue(arg.type, args[index]));
+        }
         return args.map(arg => StellarSdk.nativeToScVal(arg));
     }
 }

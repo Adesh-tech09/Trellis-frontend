@@ -108,6 +108,11 @@ export interface SorobanFunctionSpec {
   result: string;
 }
 
+export type SorobanScValType =
+  | "bool" | "string" | "symbol" | "bytes" | "address" | "void"
+  | "u32" | "i32" | "u64" | "i64" | "u128" | "i128" | "u256" | "i256"
+  | "timepoint" | "duration";
+
 export interface ResourceMetrics {
   cpuInstructions: number;
   ramBytes: number;
