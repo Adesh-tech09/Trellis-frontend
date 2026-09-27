@@ -1,6 +1,12 @@
 import { StellarNetworkConfig, StellarNetwork } from "./types";
 
 // Stellar Network Configurations
+const parseFallbackRpcUrls = (value?: string): string[] =>
+  (value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 export const STELLAR_NETWORKS: Record<string, StellarNetworkConfig> = {
   mainnet: {
     name: "mainnet",
@@ -8,6 +14,10 @@ export const STELLAR_NETWORKS: Record<string, StellarNetworkConfig> = {
     horizonUrl:
       process.env.NEXT_PUBLIC_STELLAR_MAINNET_URL ||
       "https://horizon.stellar.org",
+    rpcUrl:
+      process.env.NEXT_PUBLIC_STELLAR_MAINNET_RPC_URL ||
+      "https://horizon.stellar.org".replace("horizon", "soroban-rpc"),
+    rpcFallbackUrls: parseFallbackRpcUrls(process.env.NEXT_PUBLIC_STELLAR_MAINNET_RPC_FALLBACKS),
     networkPassphrase:
       process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE_MAINNET ||
       "Public Global Stellar Network ; September 2015",
@@ -20,7 +30,10 @@ export const STELLAR_NETWORKS: Record<string, StellarNetworkConfig> = {
     horizonUrl:
       process.env.NEXT_PUBLIC_STELLAR_TESTNET_URL ||
       "https://horizon-testnet.stellar.org",
-    rpcUrl: "https://soroban-testnet.stellar.org",
+    rpcUrl:
+      process.env.NEXT_PUBLIC_STELLAR_TESTNET_RPC_URL ||
+      "https://soroban-testnet.stellar.org",
+    rpcFallbackUrls: parseFallbackRpcUrls(process.env.NEXT_PUBLIC_STELLAR_TESTNET_RPC_FALLBACKS),
     networkPassphrase:
       process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE_TESTNET ||
       "Test SDF Network ; September 2015",
@@ -33,7 +46,10 @@ export const STELLAR_NETWORKS: Record<string, StellarNetworkConfig> = {
     horizonUrl:
       process.env.NEXT_PUBLIC_STELLAR_FUTURENET_URL ||
       "https://horizon-futurenet.stellar.org",
-    rpcUrl: "https://rpc-futurenet.stellar.org",
+    rpcUrl:
+      process.env.NEXT_PUBLIC_STELLAR_FUTURENET_RPC_URL ||
+      "https://rpc-futurenet.stellar.org",
+    rpcFallbackUrls: parseFallbackRpcUrls(process.env.NEXT_PUBLIC_STELLAR_FUTURENET_RPC_FALLBACKS),
     networkPassphrase:
       process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE_FUTURENET ||
       "Test SDF Future Network ; October 2022",
@@ -41,6 +57,13 @@ export const STELLAR_NETWORKS: Record<string, StellarNetworkConfig> = {
     badge: "🟪 Futurenet",
   },
 };
+
+export const SOROBAN_RPC_CONFIG = {
+  latencyThresholdMs: Number(process.env.NEXT_PUBLIC_SOROBAN_RPC_LATENCY_THRESHOLD_MS || 3000),
+  maxRetries: Number(process.env.NEXT_PUBLIC_SOROBAN_RPC_MAX_RETRIES || 3),
+  baseBackoffMs: Number(process.env.NEXT_PUBLIC_SOROBAN_RPC_BASE_BACKOFF_MS || 250),
+  healthCheckIntervalMs: Number(process.env.NEXT_PUBLIC_SOROBAN_RPC_HEALTHCHECK_INTERVAL_MS || 30000),
+} as const;
 
 // Default network - ensure it's a valid network value
 const defaultNetworkValue = (process.env.NEXT_PUBLIC_DEFAULT_STELLAR_NETWORK ||
