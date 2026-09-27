@@ -56,6 +56,7 @@ export const Navigation: React.FC = () => {
     { href: "/bug-report", label: "Report Bug", icon: <BugIcon /> },
     { href: "/bug-reports", label: "Bug Reports" },
     { href: "/submissions", label: "Submission Dashboard" },
+    { href: "/settings/api-keys", label: "API Keys" },
   ];
 
   const toggleDrawer = (open: boolean) => (event: React.KeyboardEvent | React.MouseEvent) => {
