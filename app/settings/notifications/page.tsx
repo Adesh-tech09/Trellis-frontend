@@ -2,6 +2,7 @@
 
 import { NotificationSettings } from '@/components/NotificationSettings';
 import { NotificationDemo } from '@/components/NotificationDemo';
+import { AlertPreferencesPanel } from '@/components/notifications/AlertPreferencesPanel';
 
 export default function NotificationSettingsPage() {
   return (
@@ -13,6 +14,8 @@ export default function NotificationSettingsPage() {
             Manage your notification preferences and stay updated with your trades and transactions.
           </p>
         </div>
+
+        <AlertPreferencesPanel className="mb-8" />
 
         <NotificationSettings className="mb-8" />
         
@@ -35,7 +38,13 @@ export default function NotificationSettingsPage() {
                 <strong>Push Notifications:</strong> Enable to receive notifications even when the app is closed.
               </p>
               <p>
-                <strong>Quiet Hours:</strong> Set specific times when notifications should be silenced.
+                <strong>Audio Alerts:</strong> Success, warning and critical severity chimes, with a per-severity preview.
+              </p>
+              <p>
+                <strong>Quiet Hours:</strong> Set specific times when notifications should be silenced. Critical alerts still come through unless you also mute them.
+              </p>
+              <p>
+                <strong>Category Mutes:</strong> Silence trading, governance, security or system alerts independently.
               </p>
             </div>
           </div>
