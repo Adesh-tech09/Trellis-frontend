@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useReferralStore } from '@/store/referralStore';
 import ReferralShareModal from './components/ReferralShareModal';
+import VanitySlugForm from './components/VanitySlugForm';
 import { 
   Box, 
   Typography, 
@@ -159,6 +160,9 @@ const ReferralDashboard: React.FC<ReferralDashboardProps> = ({ userId }) => {
           </Grid>
         ))}
       </Grid>
+
+      {/* Custom vanity link registration (issue #128) */}
+      <VanitySlugForm userId={userId} />
 
       {/* Tabs Section */}
       <Paper
