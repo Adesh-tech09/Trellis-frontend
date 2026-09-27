@@ -5,10 +5,38 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   playwright:
+    name: playwright (${{ matrix.project }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      # One broken engine must not hide the others - the point of the matrix is
+      # to see exactly which engine/viewport combination failed.
+      fail-fast: false
+      matrix:
+        include:
+          - project: chromium
+            browser: chromium
+          - project: firefox
+            browser: firefox
+          - project: webkit
+            browser: webkit
+          - project: mobile-chrome
+            browser: chromium
+          - project: mobile-safari
+            browser: webkit
+          - project: viewport-mobile
+            browser: chromium
+          - project: viewport-tablet
+            browser: chromium
+          - project: viewport-desktop
+            browser: chromium
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,16 +48,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      - name: Run Playwright smoke tests
-        run: npm run test:e2e
+      - name: Install Playwright browser (${{ matrix.browser }})
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run Playwright (${{ matrix.project }})
+        run: npm run test:e2e -- --project="${{ matrix.project }}"
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: playwright-report/
+          retention-days: 7
+
+      - name: Upload failure traces and videos
+        uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: playwright-failures-${{ matrix.project }}
+          path: test-results/
           retention-days: 7
