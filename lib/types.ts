@@ -134,11 +134,13 @@ export interface ResourceMetrics {
   readCount: number;
   writeCount: number;
   costXlm: string;
+  minResourceFee?: string;
 }
 
 export interface SorobanTransactionResult extends TransactionResult {
   metrics?: ResourceMetrics;
   events?: SorobanEvent[];
+  isFeeBumped?: boolean;
 }
 
 export interface SorobanEvent {
