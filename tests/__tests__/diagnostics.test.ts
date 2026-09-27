@@ -4,6 +4,8 @@ import {
   checkDependencies,
   checkConnectivity,
   checkDatabaseAndFixtures,
+  checkSystemRequirements,
+  checkLocalPorts,
   runDiagnostics,
 } from "../../scripts/diagnostics.mjs";
 
@@ -64,6 +66,29 @@ describe("Contributor Diagnostics", () => {
     });
   });
 
+  describe("checkSystemRequirements", () => {
+    it("reports system memory and disk space", () => {
+      const results = checkSystemRequirements();
+      expect(Array.isArray(results)).toBe(true);
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      
+      const memCheck = results.find((r: { name: string }) => r.name === "System Memory");
+      expect(memCheck).toBeDefined();
+      expect(["pass", "warn"]).toContain(memCheck?.status);
+    });
+  });
+
+  describe("checkLocalPorts", () => {
+    it("checks availability of local dev ports", async () => {
+      const results = await checkLocalPorts();
+      expect(Array.isArray(results)).toBe(true);
+      
+      const port3000 = results.find((r: { name: string }) => r.name === "Local Port 3000");
+      expect(port3000).toBeDefined();
+      expect(["pass", "fail"]).toContain(port3000?.status);
+    });
+  });
+
   describe("runDiagnostics", () => {
     it("aggregates all diagnostics categories and produces a comprehensive report", async () => {
       const report = await runDiagnostics({ skipNetwork: true });
@@ -78,13 +103,15 @@ describe("Contributor Diagnostics", () => {
       expect(typeof report.summary.warnings).toBe("number");
       expect(typeof report.summary.failures).toBe("number");
 
-      expect(report.groups.length).toBe(5);
+      expect(report.groups.length).toBe(7);
       const groupNames = report.groups.map((g: { name: string }) => g.name);
       expect(groupNames).toContain("Developer Tooling & Runtime");
       expect(groupNames).toContain("Configuration & Environment");
       expect(groupNames).toContain("Project Dependencies & Setup");
       expect(groupNames).toContain("Service Connectivity & Network");
       expect(groupNames).toContain("Database & Fixture Integrity");
+      expect(groupNames).toContain("System Requirements");
+      expect(groupNames).toContain("Local Ports");
     });
   });
 });
