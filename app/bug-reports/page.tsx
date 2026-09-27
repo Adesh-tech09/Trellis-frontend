@@ -3,14 +3,17 @@
 import React, { useState, useEffect } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { type BugReport } from '../../types/bug-report';
+import { detectRegression, getBuildVersions } from '../../lib/bug-reports-pagination';
 
 const BugReportsPage = () => {
   const [filter, setFilter] = useState<'all' | 'submitted' | 'under_review' | 'in_progress' | 'resolved' | 'rejected'>('all');
   const [sortBy, setSortBy] = useState<'date' | 'priority' | 'reward'>('date');
+  const [buildVersion, setBuildVersion] = useState<string>('all');
 
   const fetchBugReports = async ({ pageParam }: { pageParam?: unknown }) => {
     const cursor = typeof pageParam === 'string' ? `&cursor=${encodeURIComponent(pageParam)}` : '';
-    const response = await fetch(`/api/bug-reports?status=${filter}&limit=20${cursor}`);
+    const version = buildVersion !== 'all' ? `&buildVersion=${encodeURIComponent(buildVersion)}` : '';
+    const response = await fetch(`/api/bug-reports?status=${filter}&limit=20${version}${cursor}`);
     if (!response.ok) {
       throw new Error('Failed to fetch bug reports');
     }
@@ -18,7 +21,7 @@ const BugReportsPage = () => {
   };
 
   const { data, isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: ['bug-reports', filter],
+    queryKey: ['bug-reports', filter, buildVersion],
     queryFn: fetchBugReports,
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
   });
@@ -70,8 +73,13 @@ const BugReportsPage = () => {
     }
   };
 
-  const reports = data?.pages.flatMap((page) => page.bugReports) || [];
-  const filteredReports = reports;
+  const reports: BugReport[] = data?.pages.flatMap((page) => page.bugReports) || [];
+  const buildVersions = getBuildVersions(reports);
+  const filteredReports =
+    buildVersion === 'all'
+      ? reports
+      : reports.filter((report: BugReport) => report.buildVersion === buildVersion);
+  const regression = detectRegression(filteredReports);
 
   const sortedReports = [...filteredReports].sort((a: BugReport, b: BugReport) => {
     switch (sortBy) {
@@ -219,21 +227,71 @@ const BugReportsPage = () => {
               </button>
             </div>
             
-            <div className="flex items-center gap-2">
-              <label htmlFor="bug-report-sort" className="text-sm text-gray-300">Sort by:</label>
-              <select
-                id="bug-report-sort"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as 'date' | 'priority' | 'reward')}
-                className="px-3 py-2 bg-trellis-vine/20 border border-trellis-vine/50 rounded-lg text-white focus:outline-none focus:border-trellis-leaf"
-              >
-                <option value="date">Date</option>
-                <option value="priority">Priority</option>
-                <option value="reward">Reward</option>
-              </select>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <label htmlFor="bug-report-build-version" className="text-sm text-gray-300">Build:</label>
+                <select
+                  id="bug-report-build-version"
+                  value={buildVersion}
+                  onChange={(e) => setBuildVersion(e.target.value)}
+                  className="px-3 py-2 bg-trellis-vine/20 border border-trellis-vine/50 rounded-lg text-white focus:outline-none focus:border-trellis-leaf"
+                >
+                  <option value="all">All versions</option>
+                  {buildVersions.map((version) => (
+                    <option key={version} value={version}>
+                      {version}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label htmlFor="bug-report-sort" className="text-sm text-gray-300">Sort by:</label>
+                <select
+                  id="bug-report-sort"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as 'date' | 'priority' | 'reward')}
+                  className="px-3 py-2 bg-trellis-vine/20 border border-trellis-vine/50 rounded-lg text-white focus:outline-none focus:border-trellis-leaf"
+                >
+                  <option value="date">Date</option>
+                  <option value="priority">Priority</option>
+                  <option value="reward">Reward</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>
+
+        {/* Regression Alert */}
+        {regression && (
+          <div
+            role="alert"
+            data-testid="regression-alert"
+            className="mb-8 bg-red-500/10 border border-red-500/50 rounded-lg p-6 backdrop-blur-sm"
+          >
+            <div className="flex items-start gap-3">
+              <svg
+                className="w-6 h-6 text-red-400 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                />
+              </svg>
+              <div>
+                <h2 className="text-lg font-semibold text-red-400 mb-1">
+                  Possible regression in {regression.buildVersion}
+                </h2>
+                <p className="text-sm text-gray-300">{regression.message}</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Bug Reports List */}
         {sortedReports.length === 0 ? (
@@ -258,6 +316,9 @@ const BugReportsPage = () => {
               {filter === 'all' 
                 ? "You haven't submitted any bug reports yet." 
                 : `No bug reports with status "${filter}" found.`}
+              {buildVersion !== 'all' && (
+                <> {`No reports filed against build ${buildVersion}.`}</>
+              )}
             </p>
             <button
               onClick={() => window.location.href = '/bug-report'}
@@ -283,6 +344,14 @@ const BugReportsPage = () => {
                       <span className={`px-2 py-1 text-xs font-medium rounded-full ${getPriorityColor(report.priority)}`}>
                         {report.priority}
                       </span>
+                      {report.buildVersion && (
+                        <span
+                          data-testid="build-version-badge"
+                          className="px-2 py-1 text-xs font-medium rounded-full border border-trellis-leaf/50 bg-trellis-leaf/10 text-trellis-leaf"
+                        >
+                          {report.buildVersion}
+                        </span>
+                      )}
                     </div>
                     
                     <p className="text-gray-300 mb-3 line-clamp-2">

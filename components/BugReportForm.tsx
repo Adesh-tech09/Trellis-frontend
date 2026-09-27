@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
-import { BUG_CATEGORIES, PRIORITY_LEVELS, type BugReportFormData, type RewardCalculation } from '../types/bug-report';
+import React, { useMemo, useState } from 'react';
+import { BUG_CATEGORIES, PRIORITY_LEVELS, type BugReport, type BugReportFormData, type RewardCalculation } from '../types/bug-report';
+import { findSimilarReports } from '../lib/bug-reports-pagination';
 import RewardCalculator from './RewardCalculator';
 import ScreenshotUpload from './ScreenshotUpload';
 import Button from './Button';
@@ -9,11 +10,14 @@ import Button from './Button';
 interface BugReportFormProps {
   onSubmit: (data: BugReportFormData) => void;
   isSubmitting?: boolean;
+  /** Existing reports used to warn the reporter about probable duplicates. */
+  existingReports?: BugReport[];
 }
 
 export const BugReportForm: React.FC<BugReportFormProps> = ({
   onSubmit,
-  isSubmitting = false
+  isSubmitting = false,
+  existingReports = []
 }) => {
   const [formData, setFormData] = useState<BugReportFormData>({
     title: '',
@@ -25,11 +29,20 @@ export const BugReportForm: React.FC<BugReportFormProps> = ({
     category: 'functionality',
     reporterEmail: '',
     screenshots: [],
-    agreeToTerms: false
+    agreeToTerms: false,
+    buildVersion: ''
   });
 
   const [reward, setReward] = useState<RewardCalculation | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const similarReports = useMemo(() => {
+    if (formData.title.trim().length < 10) return [];
+    return findSimilarReports(
+      { title: formData.title, description: formData.description },
+      existingReports,
+    );
+  }, [formData.title, formData.description, existingReports]);
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -269,12 +282,29 @@ export const BugReportForm: React.FC<BugReportFormProps> = ({
 
           {/* Contact Information */}
           <div className="bg-trellis-vine/10 border border-trellis-vine/30 rounded-lg p-6 backdrop-blur-sm">
-            <h3 className="text-lg font-semibold mb-4 text-trellis-leaf">Contact Information</h3>
-            
-            <div>
-              <label htmlFor="bug-email" className="block text-sm font-medium text-gray-300 mb-2">
-                Email Address (Optional)
-              </label>
+            <h3 className="text-lg font-semibold mb-4 text-trellis-leaf">Contact Information</h3>              <div>
+                <label htmlFor="bug-build-version" className="block text-sm font-medium text-gray-300 mb-2">
+                  Application Build Version (Optional)
+                </label>
+                <input
+                  id="bug-build-version"
+                  name="buildVersion"
+                  type="text"
+                  value={formData.buildVersion || ''}
+                  onChange={(e) => handleInputChange('buildVersion', e.target.value)}
+                  placeholder="e.g. v0.1.0"
+                  aria-describedby="bug-build-version-help"
+                  className="w-full px-3 py-2 bg-trellis-vine/20 border border-trellis-vine/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-trellis-leaf focus:ring-1 focus:ring-trellis-leaf"
+                />
+                <p id="bug-build-version-help" className="mt-2 text-sm text-gray-400">
+                  Tagging the build helps maintainers spot regressions caused by a release.
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="bug-email" className="block text-sm font-medium text-gray-300 mb-2">
+                  Email Address (Optional)
+                </label>
               <input
                 id="bug-email"
                 name="reporterEmail"
@@ -323,6 +353,50 @@ export const BugReportForm: React.FC<BugReportFormProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Duplicate Warning */}
+          {similarReports.length > 0 && (
+            <div
+              role="alert"
+              data-testid="duplicate-warning"
+              className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-6 backdrop-blur-sm"
+            >
+              <div className="flex items-start space-x-3">
+                <svg
+                  className="w-6 h-6 text-yellow-400 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                  />
+                </svg>
+                <div className="flex-1">
+                  <h3 className="text-base font-semibold text-yellow-400 mb-1">
+                    Possible duplicate report
+                  </h3>
+                  <p className="text-sm text-gray-300 mb-2">
+                    Similar reports already exist. Add detail that distinguishes yours, or comment on
+                    an existing report instead of filing a new one.
+                  </p>
+                  <ul className="space-y-1 text-sm text-gray-300">
+                    {similarReports.map((match) => (
+                      <li key={match.report.id} className="flex items-center justify-between gap-4">
+                        <span className="truncate">{match.report.title}</span>
+                        <span className="text-xs text-gray-400 shrink-0">
+                          {Math.round(match.score * 100)}% match
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Submit Button */}
           <div className="flex justify-end">
