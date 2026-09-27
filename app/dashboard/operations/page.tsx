@@ -1,22 +1,173 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import type { OperationalHealth } from '@/lib/operational-health';
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
+  buildExceptionTrendReport,
+  createAlertRule,
+  describeAlertRule,
+  type AlertMetric,
+  type AlertRule,
+  type ExceptionEvent,
+  type OperationalHealth,
+} from '@/lib/operational-health';
+import { useApiMetricsStore } from '@/store/apiMetricsStore';
+
+const MINUTE_MS = 60 * 1000;
+
+const WINDOW_OPTIONS = [
+  { label: 'Last 5 minutes', minutes: 5 },
+  { label: 'Last 15 minutes', minutes: 15 },
+  { label: 'Last 60 minutes', minutes: 60 },
+  { label: 'Last 6 hours', minutes: 360 },
+] as const;
+
+const METRIC_OPTIONS: ReadonlyArray<{ value: AlertMetric; label: string }> = [
+  { value: 'exceptions', label: 'All exceptions' },
+  { value: 'rpc-exceptions', label: 'RPC errors' },
+  { value: 'critical-exceptions', label: 'Critical exceptions' },
+];
+
+const ALL_VALUE = 'all';
+
+type FilterState = {
+  component: string;
+  browserOS: string;
+  release: string;
+};
+
+type HealthResponse = OperationalHealth & { exceptions?: ExceptionEvent[] };
+
+function uniqueValues(events: readonly ExceptionEvent[], key: keyof FilterState): string[] {
+  return Array.from(new Set(events.map((event) => event[key]))).sort((a, b) => a.localeCompare(b));
+}
+
+function groupLabel(dimension: string): string {
+  if (dimension === 'browserOS') return 'Browser / OS';
+  return dimension.charAt(0).toUpperCase() + dimension.slice(1);
+}
 
 export default function OperationsDashboardPage() {
   const [health, setHealth] = useState<OperationalHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [now, setNow] = useState<number | null>(null);
+  const [windowMinutes, setWindowMinutes] = useState<number>(60);
+  const [filters, setFilters] = useState<FilterState>({
+    component: ALL_VALUE,
+    browserOS: ALL_VALUE,
+    release: ALL_VALUE,
+  });
+  const [ruleDraft, setRuleDraft] = useState({
+    name: '',
+    metric: 'rpc-exceptions' as AlertMetric,
+    threshold: '15',
+    windowMinutes: '5',
+    severity: 'critical' as AlertRule['severity'],
+  });
+  const [ruleError, setRuleError] = useState<string | null>(null);
+
+  const exceptionEvents = useApiMetricsStore((state) => state.exceptionEvents);
+  const alertRules = useApiMetricsStore((state) => state.alertRules);
+  const setExceptionEvents = useApiMetricsStore((state) => state.setExceptionEvents);
+  const addAlertRule = useApiMetricsStore((state) => state.addAlertRule);
+  const removeAlertRule = useApiMetricsStore((state) => state.removeAlertRule);
 
   useEffect(() => {
-    fetch('/api/operational-health')
+    setMounted(true);
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const query = new URLSearchParams({ windowMinutes: String(windowMinutes) });
+    fetch(`/api/operational-health?${query.toString()}`)
       .then((response) => {
         if (!response.ok) throw new Error('Unable to load operational health');
-        return response.json() as Promise<OperationalHealth>;
+        return response.json() as Promise<HealthResponse>;
       })
-      .then(setHealth)
-      .catch((requestError: Error) => setError(requestError.message));
-  }, []);
+      .then((data) => {
+        if (cancelled) return;
+        setHealth(data);
+        setError(null);
+        if (Array.isArray(data.exceptions)) setExceptionEvents(data.exceptions);
+      })
+      .catch((requestError: Error) => {
+        if (!cancelled) setError(requestError.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [windowMinutes, setExceptionEvents]);
+
+  const activeFilters = useMemo(
+    () => ({
+      component: filters.component === ALL_VALUE ? undefined : filters.component,
+      browserOS: filters.browserOS === ALL_VALUE ? undefined : filters.browserOS,
+      release: filters.release === ALL_VALUE ? undefined : filters.release,
+    }),
+    [filters],
+  );
+
+  const componentOptions = useMemo(() => uniqueValues(exceptionEvents, 'component'), [exceptionEvents]);
+  const browserOSOptions = useMemo(() => uniqueValues(exceptionEvents, 'browserOS'), [exceptionEvents]);
+  const releaseOptions = useMemo(() => uniqueValues(exceptionEvents, 'release'), [exceptionEvents]);
+
+  const report = useMemo(() => {
+    if (now === null) return null;
+    const bucketMinutes = Math.max(1, Math.round(windowMinutes / 12));
+    return buildExceptionTrendReport(exceptionEvents, {
+      windowMs: windowMinutes * MINUTE_MS,
+      bucketMs: bucketMinutes * MINUTE_MS,
+      now,
+      filters: activeFilters,
+      rules: alertRules,
+    });
+  }, [now, exceptionEvents, windowMinutes, activeFilters, alertRules]);
+
+  const chartData = useMemo(
+    () =>
+      report?.buckets.map((bucket) => ({
+        label: bucket.label,
+        count: bucket.count,
+        ratePerMinute: bucket.ratePerMinute,
+      })) ?? [],
+    [report],
+  );
+
+  function updateFilter(key: keyof FilterState, value: string) {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function handleCreateRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const rule = createAlertRule({
+        name: ruleDraft.name,
+        metric: ruleDraft.metric,
+        threshold: Number(ruleDraft.threshold),
+        windowMinutes: Number(ruleDraft.windowMinutes),
+        severity: ruleDraft.severity,
+      });
+      addAlertRule(rule);
+      setRuleError(null);
+      setRuleDraft((current) => ({ ...current, name: '' }));
+    } catch (validationError) {
+      setRuleError((validationError as Error).message);
+    }
+  }
 
   return (
     <main className="min-h-screen px-4 py-12 text-white sm:px-6 lg:px-8">
@@ -58,6 +209,245 @@ export default function OperationsDashboardPage() {
             </p>
           </>
         )}
+
+        {report && report.breaches.length > 0 && (
+          <section role="alert" aria-live="assertive" aria-labelledby="breach-heading" className="mt-10 space-y-3">
+            <h2 id="breach-heading" className="text-lg font-semibold text-red-300">Alert thresholds breached</h2>
+            {report.breaches.map((breach) => (
+              <p
+                key={breach.ruleId}
+                className="rounded-lg border border-red-500/60 bg-red-500/15 p-4 text-red-100"
+              >
+                <span className="font-semibold">{breach.ruleName}</span> — observed {breach.observed} against a
+                threshold of {breach.threshold} over {breach.windowMs / MINUTE_MS} minutes ({breach.severity}).
+              </p>
+            ))}
+          </section>
+        )}
+
+        <section aria-labelledby="trend-heading" className="mt-10">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 id="trend-heading" className="text-2xl font-bold">Exception trend</h2>
+              <p className="mt-1 text-sm text-gray-400">
+                Error frequency per time bucket. Filters and alert rules apply to the chart below.
+              </p>
+            </div>
+            <div>
+              <label htmlFor="trend-window" className="block text-xs uppercase tracking-wide text-gray-400">
+                Time window
+              </label>
+              <select
+                id="trend-window"
+                className="mt-1 rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                value={windowMinutes}
+                onChange={(event) => setWindowMinutes(Number(event.target.value))}
+              >
+                {WINDOW_OPTIONS.map((option) => (
+                  <option key={option.minutes} value={option.minutes} className="text-black">
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            {(['component', 'browserOS', 'release'] as const).map((dimension) => (
+              <div key={dimension}>
+                <label htmlFor={`filter-${dimension}`} className="block text-xs uppercase tracking-wide text-gray-400">
+                  Group by {groupLabel(dimension)}
+                </label>
+                <select
+                  id={`filter-${dimension}`}
+                  className="mt-1 w-full rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                  value={filters[dimension]}
+                  onChange={(event) => updateFilter(dimension, event.target.value)}
+                >
+                  <option value={ALL_VALUE} className="text-black">All</option>
+                  {(dimension === 'component' ? componentOptions : dimension === 'browserOS' ? browserOSOptions : releaseOptions).map((value) => (
+                    <option key={value} value={value} className="text-black">{value}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-6 rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-5">
+            {mounted && now !== null ? (
+              <div style={{ width: '100%', height: 320 }}>
+                <ResponsiveContainer>
+                  <LineChart data={chartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(79, 191, 155, 0.2)" />
+                    <XAxis dataKey="label" stroke="rgba(79, 191, 155, 0.6)" tick={{ fill: '#cbd5e1', fontSize: 12 }} />
+                    <YAxis yAxisId="count" allowDecimals={false} stroke="rgba(79, 191, 155, 0.6)" tick={{ fill: '#cbd5e1', fontSize: 12 }} />
+                    <YAxis yAxisId="rate" orientation="right" stroke="rgba(139, 92, 246, 0.6)" tick={{ fill: '#cbd5e1', fontSize: 12 }} />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'rgba(10, 14, 39, 0.9)',
+                        border: '1px solid rgba(79, 191, 155, 0.5)',
+                        borderRadius: '8px',
+                      }}
+                      labelStyle={{ color: 'rgb(139, 92, 246)' }}
+                    />
+                    <Legend />
+                    <Line yAxisId="count" type="monotone" dataKey="count" name="Exceptions" stroke="rgb(139, 92, 246)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line yAxisId="rate" type="monotone" dataKey="ratePerMinute" name="Errors / min" stroke="rgb(6, 182, 212)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <p className="text-gray-400">Loading exception trend...</p>
+            )}
+            <p aria-live="polite" className="mt-3 text-xs text-gray-400">
+              {report
+                ? `${report.total} exception${report.total === 1 ? '' : 's'} in the selected window (${report.buckets.length} buckets).`
+                : 'Aggregating exceptions...'}
+            </p>
+          </div>
+
+          {report && (
+            <div className="mt-6 grid gap-4 sm:grid-cols-3">
+              {(['component', 'browserOS', 'release'] as const).map((dimension) => (
+                <div key={dimension} className="rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-4">
+                  <h3 className="text-sm font-semibold text-gray-200">{groupLabel(dimension)} breakdown</h3>
+                  {report.groups[dimension].length === 0 ? (
+                    <p className="mt-2 text-sm text-gray-400">No exceptions.</p>
+                  ) : (
+                    <ul className="mt-2 space-y-1 text-sm text-gray-300">
+                      {report.groups[dimension].slice(0, 5).map((group) => (
+                        <li key={group.key} className="flex justify-between gap-2">
+                          <span>{group.key}</span>
+                          <span className="font-semibold text-white">{group.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section aria-labelledby="rules-heading" className="mt-10">
+          <h2 id="rules-heading" className="text-2xl font-bold">Alert rules</h2>
+          <p className="mt-1 text-sm text-gray-400">
+            Thresholds are evaluated against the recent exception stream; a breach raises the banner above.
+          </p>
+
+          <div className="mt-4 grid gap-6 lg:grid-cols-2">
+            <div className="rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-5">
+              <h3 className="text-lg font-semibold">Active rules</h3>
+              {alertRules.length === 0 ? (
+                <p className="mt-2 text-sm text-gray-400">No alert rules configured.</p>
+              ) : (
+                <ul className="mt-3 space-y-3">
+                  {alertRules.map((rule) => {
+                    const breach = report?.breaches.find((entry) => entry.ruleId === rule.id);
+                    return (
+                      <li key={rule.id} className="rounded-md border border-trellis-vine/30 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-semibold">{rule.name}</p>
+                            <p className="text-sm text-gray-400">{describeAlertRule(rule)}</p>
+                            <p className={`mt-1 text-xs font-semibold ${breach ? 'text-red-300' : 'text-green-300'}`}>
+                              {breach ? `Breaching (${breach.observed} observed)` : 'Within threshold'}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            className="rounded border border-red-400/60 px-2 py-1 text-xs text-red-200 focus:outline-none focus:ring-2 focus:ring-red-300"
+                            onClick={() => removeAlertRule(rule.id)}
+                            aria-label={`Remove alert rule ${rule.name}`}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <form onSubmit={handleCreateRule} className="rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-5">
+              <h3 className="text-lg font-semibold">Create alert rule</h3>
+
+              <div className="mt-3">
+                <label htmlFor="rule-name" className="block text-xs uppercase tracking-wide text-gray-400">Rule name</label>
+                <input
+                  id="rule-name"
+                  className="mt-1 w-full rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                  placeholder="RPC errors > 15 in 5 min"
+                  value={ruleDraft.name}
+                  onChange={(event) => setRuleDraft((current) => ({ ...current, name: event.target.value }))}
+                />
+              </div>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label htmlFor="rule-metric" className="block text-xs uppercase tracking-wide text-gray-400">Metric</label>
+                  <select
+                    id="rule-metric"
+                    className="mt-1 w-full rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                    value={ruleDraft.metric}
+                    onChange={(event) => setRuleDraft((current) => ({ ...current, metric: event.target.value as AlertMetric }))}
+                  >
+                    {METRIC_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value} className="text-black">{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="rule-threshold" className="block text-xs uppercase tracking-wide text-gray-400">Threshold</label>
+                  <input
+                    id="rule-threshold"
+                    type="number"
+                    min={1}
+                    className="mt-1 w-full rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                    value={ruleDraft.threshold}
+                    onChange={(event) => setRuleDraft((current) => ({ ...current, threshold: event.target.value }))}
+                    aria-invalid={Boolean(ruleError)}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="rule-window" className="block text-xs uppercase tracking-wide text-gray-400">Window (min)</label>
+                  <input
+                    id="rule-window"
+                    type="number"
+                    min={1}
+                    max={1440}
+                    className="mt-1 w-full rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                    value={ruleDraft.windowMinutes}
+                    onChange={(event) => setRuleDraft((current) => ({ ...current, windowMinutes: event.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <label htmlFor="rule-severity" className="block text-xs uppercase tracking-wide text-gray-400">Severity</label>
+                <select
+                  id="rule-severity"
+                  className="mt-1 w-full rounded-md border border-trellis-vine/40 bg-transparent px-3 py-2 text-sm"
+                  value={ruleDraft.severity}
+                  onChange={(event) => setRuleDraft((current) => ({ ...current, severity: event.target.value as AlertRule['severity'] }))}
+                >
+                  <option value="warning" className="text-black">Warning</option>
+                  <option value="critical" className="text-black">Critical</option>
+                </select>
+              </div>
+
+              {ruleError && <p role="alert" className="mt-3 text-sm text-red-300">{ruleError}</p>}
+
+              <button
+                type="submit"
+                className="mt-4 rounded-md bg-trellis-leaf px-4 py-2 text-sm font-semibold text-black focus:outline-none focus:ring-2 focus:ring-trellis-leaf"
+              >
+                Add rule
+              </button>
+            </form>
+          </div>
+        </section>
       </div>
     </main>
   );
