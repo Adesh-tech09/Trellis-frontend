@@ -2,7 +2,15 @@ import {
   recordFailure,
   retryFailure,
   markFailureResolved,
+  markFailureManualIntervention,
+  ignoreFailure,
+  getFailure,
+  getFailuresByType,
+  getFailuresByStatus,
+  getFailuresByResource,
   getCriticalFailures,
+  getStaleFailures,
+  getRetryableFailures,
   getFailureReport,
   partialFailureTracker,
 } from '@/lib/partial-failures';
@@ -358,6 +366,111 @@ describe('Partial Failure Tracker', () => {
       expect(() => {
         recordFailure('invalid_type' as any, 'op_1', {}, 'Error');
       }).toThrow();
+    });
+
+    it('should throw for missing required fields', () => {
+      expect(() => {
+        recordFailure('transaction' as any, '', {}, 'Error');
+      }).toThrow();
+    });
+
+    it('should throw for invalid stale threshold', () => {
+      expect(() => {
+        partialFailureTracker.setStaleThreshold(0);
+      }).toThrow();
+    });
+  });
+
+  describe('Failure Queries by Resource', () => {
+    it('should retrieve failures by resource ID', () => {
+      const resourceId = 'user_123';
+
+      recordFailure('transaction', 'tx_1', { resourceId }, 'Error');
+      recordFailure('sync', 'sync_1', { resourceId }, 'Error');
+      recordFailure('transaction', 'tx_2', { resourceId: 'user_456' }, 'Error');
+
+      const failures = getFailuresByResource(resourceId);
+      expect(failures.length).toBeGreaterThanOrEqual(2);
+      expect(failures.every((f) => (f.internalState.resourceId as string) === resourceId)).toBe(true);
+    });
+  });
+
+  describe('Retry Policy Configuration', () => {
+    it('should allow custom retry policy configuration', () => {
+      partialFailureTracker.setRetryPolicy({
+        maxRetries: 5,
+        initialDelayMs: 5000,
+        backoffMultiplier: 3,
+      });
+
+      const failure = recordFailure('transaction', 'tx_1', {}, 'Error');
+      expect(failure.maxRetries).toBe(5);
+    });
+
+    it('should throw for invalid retry policy', () => {
+      expect(() => {
+        partialFailureTracker.setRetryPolicy({ maxRetries: 0 });
+      }).toThrow();
+    });
+  });
+
+  describe('Failure Group Analysis', () => {
+    it('should calculate average age for failure groups', () => {
+      recordFailure('transaction', 'tx_1', {}, 'Error', undefined, 'high');
+      recordFailure('transaction', 'tx_2', {}, 'Error', undefined, 'high');
+
+      const report = getFailureReport();
+      const txHighGroup = report.groups.find(
+        (g) => g.operationType === 'transaction' && g.severity === 'high'
+      );
+
+      expect(txHighGroup).toBeDefined();
+      expect(txHighGroup?.averageAge).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should track affected resources in groups', () => {
+      recordFailure('transaction', 'tx_1', { resourceId: 'user_1' }, 'Error', undefined, 'high');
+      recordFailure('transaction', 'tx_2', { resourceId: 'user_2' }, 'Error', undefined, 'high');
+      recordFailure('transaction', 'tx_3', { resourceId: 'user_1' }, 'Error', undefined, 'high');
+
+      const report = getFailureReport();
+      const txHighGroup = report.groups.find(
+        (g) => g.operationType === 'transaction' && g.severity === 'high'
+      );
+
+      expect(txHighGroup?.affectedResources.size).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('Exported Helper Functions', () => {
+    it('should export all query functions', () => {
+      const failure = recordFailure('transaction', 'tx_1', { resourceId: 'user_1' }, 'Error');
+
+      expect(getFailure(failure.id)).toBeDefined();
+      expect(getFailuresByType('transaction').length).toBeGreaterThan(0);
+      expect(getFailuresByStatus('unresolved').length).toBeGreaterThan(0);
+      expect(getFailuresByResource('user_1').length).toBeGreaterThan(0);
+    });
+
+    it('should export resolution functions', () => {
+      const failure = recordFailure('transaction', 'tx_1', {}, 'Error');
+
+      const manual = markFailureManualIntervention(failure.id, 'Needs review');
+      expect(manual).toBe(true);
+
+      const updated = getFailure(failure.id);
+      expect(updated?.status).toBe('manual_intervention');
+    });
+
+    it('should export convenience functions', () => {
+      const critical = getCriticalFailures();
+      expect(Array.isArray(critical)).toBe(true);
+
+      const stale = getStaleFailures();
+      expect(Array.isArray(stale)).toBe(true);
+
+      const retryable = getRetryableFailures();
+      expect(Array.isArray(retryable)).toBe(true);
     });
   });
 });
