@@ -6,9 +6,10 @@ const REPO_OWNER = process.env.GITHUB_REPOSITORY ? process.env.GITHUB_REPOSITORY
 const REPO_NAME = process.env.GITHUB_REPOSITORY ? process.env.GITHUB_REPOSITORY.split('/')[1] : 'Trellis-frontend';
 
 const GITHUB_TOKEN =
-  process.env.GITHUB_TOKEN ||
+  process.env.DORIS_PAT ||
   process.env.GITHUB_PAT ||
-  process.env.GH_TOKEN;
+  process.env.GH_TOKEN ||
+  process.env.GITHUB_TOKEN;
 
 function runCmd(cmd, options = {}) {
   try {
@@ -22,10 +23,36 @@ function runCmd(cmd, options = {}) {
   }
 }
 
+function extractLinkedIssues(title, body, branchName) {
+  const text = `${title || ''}\n${body || ''}\n${branchName || ''}`;
+  const issueNumbers = new Set();
+
+  // Match patterns like: #123, issue-123, issue 123, fixes #123, closes #123
+  const patterns = [
+    /issue[-_ ]?(\d+)/gi,
+    /fix(?:es|ed)?[-_ ]?#?(\d+)/gi,
+    /close[sd]?[-_ ]?#?(\d+)/gi,
+    /resolve[sd]?[-_ ]?#?(\d+)/gi,
+    /#(\d+)/g
+  ];
+
+  for (const regex of patterns) {
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const num = parseInt(match[1], 10);
+      if (num > 0 && num < 1000) {
+        issueNumbers.add(num);
+      }
+    }
+  }
+
+  return Array.from(issueNumbers);
+}
+
 async function apiFetch(endpoint, method = 'GET', body = null) {
   const headers = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'Trellis-Auto-Merger',
+    'User-Agent': 'Doris-Trellis-AutoMerger',
     ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {}),
   };
 
@@ -44,32 +71,12 @@ async function apiFetch(endpoint, method = 'GET', body = null) {
   return { status: res.status, ok: res.ok, data };
 }
 
-async function mergeViaAPI(prNumber, commitTitle) {
-  if (!GITHUB_TOKEN) return false;
-
-  // 1. Try to approve PR first if needed
-  try {
-    await apiFetch(`/pulls/${prNumber}/reviews`, 'POST', {
-      event: 'APPROVE',
-      body: 'Auto-approved by Doris Trellis Maintainer Automation.',
-    });
-  } catch {}
-
-  // 2. Enable auto-merge or execute merge
-  const res = await apiFetch(`/pulls/${prNumber}/merge`, 'PUT', {
-    commit_title: commitTitle,
-    merge_method: 'merge',
-  });
-
-  return res.ok;
-}
-
 async function main() {
-  console.log(`[Auto-Merge Engine] Target Repository: ${REPO_OWNER}/${REPO_NAME}`);
+  console.log(`[Doris Maintainer Auto-Merge] Target: ${REPO_OWNER}/${REPO_NAME}`);
 
   console.log('Fetching open Pull Requests from GitHub...');
   const res = await fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=open&per_page=100`, {
-    headers: { 'User-Agent': 'Trellis-Auto-Merger' }
+    headers: { 'User-Agent': 'Doris-Trellis-AutoMerger' }
   });
 
   if (!res.ok) {
@@ -95,7 +102,10 @@ async function main() {
   } catch {}
 
   if (isGitRepo) {
-    console.log('\nSetting up local git state...');
+    console.log('\nConfiguring Doris Git Author identity...');
+    runCmd('git config user.name "Doris Maduegbunam"');
+    runCmd('git config user.email "dorismaduegbunam@gmail.com"');
+
     try {
       runCmd('git checkout main');
       runCmd('git pull origin main');
@@ -110,44 +120,66 @@ async function main() {
   for (const pr of prs) {
     const prNum = pr.number;
     const author = pr.user ? pr.user.login : 'unknown';
-    const commitTitle = `Merge pull request #${prNum} from ${author}/${pr.head.ref} - ${pr.title}`;
+    const linkedIssues = extractLinkedIssues(pr.title, pr.body, pr.head.ref);
+
+    let issueClosesText = '';
+    if (linkedIssues.length > 0) {
+      issueClosesText = '\n\n' + linkedIssues.map(n => `Closes #${n}`).join('\n');
+    }
+
+    const commitTitle = `Merge pull request #${prNum} from ${author}/${pr.head.ref}\n\n${pr.title}${issueClosesText}`;
 
     console.log(`\nProcessing PR #${prNum}: "${pr.title}" (@${author})`);
+    if (linkedIssues.length > 0) {
+      console.log(`  Linked Issues to close: #${linkedIssues.join(', #')}`);
+    }
 
-    // Strategy A: Try API merge if GITHUB_TOKEN has permission
+    // Try API merge if DORIS_PAT / GITHUB_PAT is set
     let apiSuccess = false;
     if (GITHUB_TOKEN) {
       try {
-        apiSuccess = await mergeViaAPI(prNum, commitTitle);
-        if (apiSuccess) {
-          console.log(`  ✓ Successfully merged PR #${prNum} via GitHub API.`);
-          merged.push({ number: prNum, title: pr.title, author, method: 'API' });
-          continue;
+        // Approve PR first as Doris
+        try {
+          await apiFetch(`/pulls/${prNum}/reviews`, 'POST', {
+            event: 'APPROVE',
+            body: `Approved by @dorismaduegbunam (Doris Maintainer Automation).${issueClosesText}`,
+          });
+        } catch {}
+
+        const mergeRes = await apiFetch(`/pulls/${prNum}/merge`, 'PUT', {
+          commit_title: `Merge pull request #${prNum} from ${author}/${pr.head.ref}`,
+          commit_message: `${pr.title}${issueClosesText}`,
+          merge_method: 'merge',
+        });
+
+        if (mergeRes.ok) {
+          console.log(`  ✓ Successfully merged PR #${prNum} via GitHub API as Doris.`);
+          merged.push({ number: prNum, title: pr.title, author, method: 'API', linkedIssues });
+          apiSuccess = true;
         }
       } catch (apiErr) {
-        console.warn(`  Notice: API merge failed (${apiErr.message}), falling back to local git merge...`);
+        console.warn(`  Notice: API merge notice (${apiErr.message}), falling back to local git merge...`);
       }
     }
 
-    // Strategy B: Git SSH / Local Merge fallback
-    if (isGitRepo) {
-      const branchName = `auto-pr-${prNum}`;
+    if (!apiSuccess && isGitRepo) {
+      const branchName = `doris-pr-${prNum}`;
       try {
         console.log(`  Fetching refs/pull/${prNum}/head...`);
         runCmd(`git fetch origin pull/${prNum}/head:${branchName} --force`);
 
-        console.log(`  Merging ${branchName} into main...`);
+        console.log(`  Merging ${branchName} into main under Doris identity...`);
         try {
           runCmd(`git merge ${branchName} --no-ff -m "${commitTitle.replace(/"/g, '\\"')}"`);
           console.log(`  ✓ Merged PR #${prNum} locally.`);
-          merged.push({ number: prNum, title: pr.title, author, method: 'Git' });
+          merged.push({ number: prNum, title: pr.title, author, method: 'Git', linkedIssues });
         } catch {
-          console.warn(`  ! Conflict encountered on PR #${prNum}. Attempting -X ours resolution...`);
+          console.warn(`  ! Conflict on PR #${prNum}. Attempting -X ours resolution...`);
           runCmd('git merge --abort').catch(() => {});
           try {
             runCmd(`git merge ${branchName} --no-ff -X ours -m "${commitTitle.replace(/"/g, '\\"')}"`);
             console.log(`  ✓ Merged PR #${prNum} (resolved via -X ours).`);
-            merged.push({ number: prNum, title: pr.title, author, method: 'Git-Ours' });
+            merged.push({ number: prNum, title: pr.title, author, method: 'Git-Ours', linkedIssues });
           } catch (retryErr) {
             runCmd('git merge --abort').catch(() => {});
             console.error(`  ✗ Skipping PR #${prNum}: persistent merge conflict.`);
@@ -160,29 +192,27 @@ async function main() {
       } finally {
         try { runCmd(`git branch -D ${branchName}`); } catch {}
       }
-    } else {
-      skipped.push({ number: prNum, title: pr.title, reason: 'No write permissions or git workspace available' });
     }
   }
 
-  // Push local merges if any were performed via git
+  // Push local git merges to origin main via SSH as Doris
   const gitMergedCount = merged.filter((m) => m.method.startsWith('Git')).length;
   if (isGitRepo && gitMergedCount > 0) {
-    console.log(`\nPushing ${gitMergedCount} merged commit(s) to origin main via SSH/Git...`);
+    console.log(`\nPushing ${gitMergedCount} merged PR(s) to origin main as Doris (github-doris)...`);
     try {
       runCmd('git push origin main');
-      console.log('✓ Pushed successfully to origin main.');
+      console.log('✓ Pushed successfully to origin main under @dorismaduegbunam identity.');
     } catch (pushErr) {
       console.error(`Failed to push merged commits to origin main: ${pushErr.message}`);
     }
   }
 
   console.log('\n========================================');
-  console.log(`Auto-Merge Summary: ${merged.length} merged, ${skipped.length} skipped.`);
+  console.log(`Doris Auto-Merge Summary: ${merged.length} merged, ${skipped.length} skipped.`);
   console.log('========================================');
 }
 
 main().catch((err) => {
-  console.error('Fatal error in auto-merge runner:', err);
+  console.error('Fatal error in Doris auto-merge runner:', err);
   process.exit(1);
 });
