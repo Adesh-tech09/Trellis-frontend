@@ -2,7 +2,7 @@ import type { StellarNetwork } from '../types';
 
 export type ProposalType = 'upgrade_agent' | 'update_params' | 'treasury_spend';
 
-export type ProposalStatus = 'pending' | 'active' | 'failed' | 'executed' | 'expired';
+export type ProposalStatus = 'pending' | 'active' | 'failed' | 'queued' | 'executed' | 'expired';
 
 export interface GovernanceConfig {
   network: StellarNetwork;

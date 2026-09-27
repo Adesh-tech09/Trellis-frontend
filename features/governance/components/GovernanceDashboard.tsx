@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useStellarWallet } from '@/components/context/StellarWalletProvider';
 import { formatXlmAmount } from '@/lib/stellar';
@@ -29,6 +29,7 @@ interface GovernanceDashboardProps {
   proposals: Proposal[];
   onCreateProposal: () => void;
   onVote: (proposal: Proposal, choice: VoteChoice) => void;
+  onQueue?: (proposal: Proposal) => void;
   onExecute: (proposal: Proposal) => void;
   isVoting?: boolean;
 }
@@ -38,6 +39,7 @@ export function GovernanceDashboard({
   proposals,
   onCreateProposal,
   onVote,
+  onQueue,
   onExecute,
   isVoting = false,
 }: GovernanceDashboardProps) {
@@ -179,6 +181,13 @@ export function GovernanceDashboard({
 
       <section className="grid lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-4">
+          
+          {onDelegate && (
+            <div className="mb-6">
+              <VoteDelegation onDelegate={onDelegate} />
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <h2 className="text-2xl font-semibold glow-text">Proposals</h2>
           </div>
@@ -213,6 +222,7 @@ export function GovernanceDashboard({
                 proposal.totalVotingPowerAtCreation,
                 { ...config, useQuadraticVoting: true }
               );
+              const timelockExpired = isTimelockExpired(proposal);
 
               return (
                 <div
@@ -228,19 +238,26 @@ export function GovernanceDashboard({
                         {proposal.type} • Created by {proposal.creator}
                       </p>
                     </div>
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                        proposal.status === 'executed'
-                          ? 'bg-emerald-500/20 text-emerald-300'
-                          : proposal.status === 'active'
-                          ? 'bg-blue-500/20 text-blue-300'
-                          : proposal.status === 'failed'
-                          ? 'bg-red-500/20 text-red-300'
-                          : 'bg-gray-500/20 text-gray-300'
-                      }`}
-                    >
-                      {proposal.status.toUpperCase()}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {proposal.status === 'queued' && proposal.executionEta && !timelockExpired && (
+                        <TimelockCountdown executionEta={proposal.executionEta} onExpire={() => {}} />
+                      )}
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                          proposal.status === 'executed'
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : proposal.status === 'queued'
+                            ? 'bg-amber-500/20 text-amber-300'
+                            : proposal.status === 'active'
+                            ? 'bg-blue-500/20 text-blue-300'
+                            : proposal.status === 'failed'
+                            ? 'bg-red-500/20 text-red-300'
+                            : 'bg-gray-500/20 text-gray-300'
+                        }`}
+                      >
+                        {proposal.status.toUpperCase()}
+                      </span>
+                    </div>
                   </div>
 
                   <p className="text-sm text-gray-300">{proposal.description}</p>

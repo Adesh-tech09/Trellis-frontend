@@ -230,6 +230,10 @@ export default function ProvenanceExplorer() {
                       </div>
                     )}
                   </div>
+
+                  {record.details.proof && record.txHash && (
+                    <MerkleProofInspector proof={record.details.proof} txHash={record.txHash} />
+                  )}
                 </div>
               </div>
             ))}
