@@ -37,7 +37,7 @@ interface ApiMetricsActions {
 
 export type ApiMetricsStore = ApiMetricsState & ApiMetricsActions;
 
-export const useApiMetricsStore = create<ApiMetricsStore>((set) => ({
+const initialApiMetricsState: ApiMetricsState = {
   totalRequests: 0,
   cacheHits: 0,
   networkRequests: 0,

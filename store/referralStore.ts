@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { ReferralService } from '../../features/referral-sharing/services/referralService';
 import {
   AnalyticsService,
@@ -10,6 +11,7 @@ import {
   ReferralReward,
   ReferralClickMetrics,
 } from '../../features/referral-sharing/types';
+import { createPersistStorage } from './persistence';
 
 interface ReferralState {
   stats: ReferralStats | null;
@@ -21,6 +23,7 @@ interface ReferralState {
   vanitySlug: string | null;
   loading: boolean;
   error: string | null;
+  hasHydrated: boolean;
 }
 
 interface ReferralActions {
@@ -38,11 +41,12 @@ interface ReferralActions {
   recordClick: (input: RecordClickEventInput) => Promise<void>;
   claimReferralReward: (rewardId: string) => Promise<string>;
   clearError: () => void;
+  setHydrated: (hydrated: boolean) => void;
 }
 
 export type ReferralStore = ReferralState & ReferralActions;
 
-export const useReferralStore = create<ReferralStore>((set, get) => ({
+const initialReferralState: ReferralState = {
   stats: null,
   links: [],
   rewards: [],
@@ -50,6 +54,8 @@ export const useReferralStore = create<ReferralStore>((set, get) => ({
   vanitySlug: null,
   loading: false,
   error: null,
+  hasHydrated: false,
+};
 
   fetchReferralData: async (userId: string) => {
     set({ loading: true, error: null });
@@ -87,23 +93,25 @@ export const useReferralStore = create<ReferralStore>((set, get) => ({
     }
   },
 
-  generateLink: async ({ userId, reward }: { userId: string; reward?: string }) => {
-    try {
-      const newLink = await ReferralService.generateReferralLink(userId, reward);
-      set((state) => ({
-        links: [newLink, ...state.links],
-        stats: state.stats
-          ? { ...state.stats, activeLinks: state.stats.activeLinks + 1 }
-          : state.stats,
-      }));
-      return newLink;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to generate link';
-      set({ error: message });
-      throw new Error(message);
-    }
-  },
+      fetchReferralData: async (userId: string) => {
+        set({ loading: true, error: null });
+        try {
+          const [stats, links, rewards] = await Promise.all([
+            ReferralService.getReferralStats(userId),
+            ReferralService.getUserReferralLinks(userId),
+            ReferralService.getReferralRewards(userId),
+          ]);
+          set({ stats, links, rewards, loading: false });
+        } catch (error) {
+          set({
+            loading: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Failed to fetch referral data',
+          });
+        }
+      },
 
   registerVanitySlug: async ({ userId, slug, targetAgentId, reward }) => {
     set({ loading: true, error: null });
@@ -169,5 +177,61 @@ export const useReferralStore = create<ReferralStore>((set, get) => ({
     }
   },
 
-  clearError: () => set({ error: null }),
-}));
+      claimReferralReward: async (rewardId: string) => {
+        try {
+          const success = await ReferralService.claimReward(rewardId);
+          if (!success) throw new Error('Claim failed');
+          const rewards = get().rewards.map((reward) =>
+            reward.id === rewardId
+              ? { ...reward, status: 'claimed' as const }
+              : reward,
+          );
+          set({ rewards });
+          return rewardId;
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Failed to claim reward';
+          set({ error: message });
+          throw new Error(message);
+        }
+      },
+
+      clearError: () => set({ error: null }),
+      setHydrated: (hydrated) => set({ hasHydrated: hydrated }),
+    }),
+    {
+      name: 'trellis-referral-store',
+      version: 1,
+      storage: createPersistStorage(),
+      partialize: (state) => ({
+        stats: state.stats,
+        links: state.links,
+        rewards: state.rewards,
+      }),
+      migrate: (persistedState, version) => {
+        if (!persistedState || typeof persistedState !== 'object') {
+          return initialReferralState;
+        }
+
+        const state = persistedState as Partial<ReferralState>;
+        const nextState: ReferralState = {
+          stats: state.stats ?? null,
+          links: Array.isArray(state.links) ? state.links : [],
+          rewards: Array.isArray(state.rewards) ? state.rewards : [],
+          loading: false,
+          error: null,
+          hasHydrated: false,
+        };
+
+        if (version <= 0) {
+          return nextState;
+        }
+
+        return nextState;
+      },
+      onRehydrateStorage: () => () => {
+        useReferralStore.setState({ hasHydrated: true });
+      },
+    },
+  ),
+);
