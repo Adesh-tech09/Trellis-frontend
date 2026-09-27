@@ -1,5 +1,6 @@
 import { Submission } from "../types";
 import { StatusBadge } from "./StatusBadge";
+import { LicenseComplianceCard } from "./LicenseComplianceCard";
 
 interface SubmissionTableProps {
   submissions: Submission[];
@@ -20,6 +21,7 @@ export function SubmissionTable({ submissions }: SubmissionTableProps) {
             <th className="px-3 py-2">Status</th>
             <th className="px-3 py-2">Timestamp</th>
             <th className="px-3 py-2">Security Score</th>
+            <th className="px-3 py-2">License Audit</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 bg-white">
@@ -61,6 +63,18 @@ export function SubmissionTable({ submissions }: SubmissionTableProps) {
                 ) : (
                   <span className="text-slate-400 italic">Not scanned</span>
                 )}
+              </td>
+              <td className="px-3 py-2 align-top">
+                <details>
+                  <summary className="cursor-pointer font-medium text-blue-700">
+                    {submission.licenseAudit?.status ?? "Not scanned"}
+                  </summary>
+                  {submission.licenseAudit && (
+                    <div className="mt-2 w-72 max-w-[80vw]">
+                      <LicenseComplianceCard audit={submission.licenseAudit} />
+                    </div>
+                  )}
+                </details>
               </td>
             </tr>
           ))}
