@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runImportPipeline } from '@/lib/import/pipeline';
 import { ImportOptions } from '@/lib/import/types';
+import { runImportPipelineWithProgress } from '@/lib/import/stream';
 
 /**
  * POST /api/import
@@ -37,6 +38,24 @@ export async function POST(request: NextRequest) {
       } catch {
         bodyData = text;
       }
+    }
+
+    const wantsStream = request.headers.get('accept')?.includes('text/event-stream') || searchParams.get('stream') === 'true';
+    if (wantsStream) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          send('start', { total: typeof bodyData === 'string' ? Math.max(0, bodyData.trim().split(/\r?\n/).length - 1) : bodyData.length });
+          try {
+            const result = await runImportPipelineWithProgress(bodyData, options, (progress) => send('progress', progress), request.signal);
+            send(result.cancelled ? 'cancelled' : 'complete', result);
+          } catch (error) {
+            send('error', { message: error instanceof Error ? error.message : 'Import failed' });
+          } finally { controller.close(); }
+        },
+      });
+      return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' } });
     }
 
     const result = runImportPipeline(bodyData, options);
