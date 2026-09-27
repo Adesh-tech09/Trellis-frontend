@@ -1,10 +1,15 @@
 import {
   createInvitation,
   acceptInvitation,
+  rejectInvitation,
   revokeInvitation,
   getInvitationsByEmail,
+  getInvitationsByInviter,
+  getInvitationsByResource,
   getInvitationStats,
   canEscalateRole,
+  validateInvitationForAcceptance,
+  getRolePermissions,
   invitationManager,
 } from '@/lib/invitations';
 
@@ -330,6 +335,117 @@ describe('Invitation Manager', () => {
       const result = invitationManager.validateInvitationForAcceptance('non-existent-id');
       expect(result.valid).toBe(false);
       expect(result.reason).toContain('not found');
+    });
+
+    it('should throw for invalid email format', () => {
+      expect(() => {
+        createInvitation('user1', 'invalid.email', 'project1', 'project', 'contributor');
+      }).toThrow();
+    });
+
+    it('should throw for missing required fields', () => {
+      expect(() => {
+        createInvitation('', 'user@example.com', 'project1', 'project', 'contributor');
+      }).toThrow();
+    });
+  });
+
+  describe('Invitation Queries by Inviter', () => {
+    it('should retrieve invitations by inviter', () => {
+      const inviterId = 'user1';
+
+      createInvitation(inviterId, 'email1@example.com', 'project1', 'project', 'contributor');
+      createInvitation(inviterId, 'email2@example.com', 'project1', 'project', 'viewer');
+      createInvitation('user2', 'email3@example.com', 'project1', 'project', 'contributor');
+
+      const invites = getInvitationsByInviter(inviterId);
+      expect(invites.length).toBeGreaterThanOrEqual(2);
+      expect(invites.every((inv) => inv.inviterId === inviterId)).toBe(true);
+    });
+  });
+
+  describe('Invitation Queries by Resource', () => {
+    it('should retrieve invitations by resource', () => {
+      createInvitation('user1', 'email1@example.com', 'project1', 'project', 'contributor');
+      createInvitation('user2', 'email2@example.com', 'project1', 'project', 'viewer');
+      createInvitation('user1', 'email3@example.com', 'project2', 'project', 'contributor');
+
+      const invites = getInvitationsByResource('project', 'project1');
+      expect(invites.length).toBeGreaterThanOrEqual(2);
+      expect(invites.every((inv) => inv.targetResourceId === 'project1')).toBe(true);
+    });
+  });
+
+  describe('Invitation Rejection', () => {
+    it('should reject a pending invitation', () => {
+      const invite = createInvitation(
+        'user1',
+        'newuser@example.com',
+        'project1',
+        'project',
+        'contributor'
+      );
+
+      const rejected = rejectInvitation(invite.id);
+      expect(rejected).toBe(true);
+
+      const updated = invitationManager.getInvitation(invite.id);
+      expect(updated?.status).toBe('rejected');
+    });
+
+    it('should not allow rejecting non-pending invitations', () => {
+      const invite = createInvitation(
+        'user1',
+        'newuser@example.com',
+        'project1',
+        'project',
+        'contributor'
+      );
+
+      acceptInvitation(invite.id, 'newuser@example.com');
+
+      expect(() => {
+        rejectInvitation(invite.id);
+      }).toThrow('Cannot reject');
+    });
+  });
+
+  describe('Exported Helper Functions', () => {
+    it('should export validation function', () => {
+      const invite = createInvitation(
+        'user1',
+        'newuser@example.com',
+        'project1',
+        'project',
+        'contributor'
+      );
+
+      const result = validateInvitationForAcceptance(invite.id);
+      expect(result.valid).toBe(true);
+    });
+
+    it('should export role permissions function', () => {
+      const viewerPerms = getRolePermissions('viewer');
+      expect(viewerPerms.canRead).toBe(true);
+      expect(viewerPerms.canWrite).toBe(false);
+
+      const adminPerms = getRolePermissions('admin');
+      expect(adminPerms.canEscalateRoles).toBe(true);
+    });
+  });
+
+  describe('Invitation Statistics', () => {
+    it('should calculate percentage accepted', () => {
+      const inviterId = 'user1';
+
+      const invite1 = createInvitation(inviterId, 'email1@example.com', 'project1', 'project', 'contributor');
+      const invite2 = createInvitation(inviterId, 'email2@example.com', 'project1', 'project', 'viewer');
+      const invite3 = createInvitation(inviterId, 'email3@example.com', 'project1', 'project', 'contributor');
+
+      acceptInvitation(invite2.id, 'email2@example.com');
+
+      const stats = getInvitationStats(inviterId);
+      expect(stats.percentAccepted).toBeGreaterThanOrEqual(33); // At least 1 out of 3
     });
   });
 });
