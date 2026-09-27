@@ -42,7 +42,8 @@ export default function AgentTelemetryDashboardPage() {
   }, [role, hydrated]);
 
   const caps = useMemo(() => getTelemetryCapabilities(role), [role]);
-  const { events, status, lastError, reconnect, clearEvents, usingMock } = useTelemetryWebSocket(role);
+  const { events, status, lastError, reconnect, clearEvents, usingMock, transport, fallbacks } =
+    useTelemetryWebSocket(role);
 
   useEffect(() => {
     if (!caps.canFilterByAgent && filters.agentRef) {
@@ -118,7 +119,16 @@ export default function AgentTelemetryDashboardPage() {
               </span>
               {usingMock && (
                 <span className="text-xs text-gray-500 border border-trellis-vine/20 rounded px-2 py-1">
-                  Mock stream (set NEXT_PUBLIC_TELEMETRY_WS_URL for real WebSocket)
+                  Mock stream (set NEXT_PUBLIC_TELEMETRY_WS_URL for real streaming)
+                </span>
+              )}
+              {!usingMock && status === 'open' && (
+                <span
+                  className="text-xs text-gray-500 border border-trellis-vine/20 rounded px-2 py-1"
+                  title="Telemetry transport selected for this session"
+                >
+                  {transport === 'webrtc' ? 'WebRTC DataChannel' : 'WebSocket'}
+                  {fallbacks > 0 ? ` (fallback ×${fallbacks})` : ''}
                 </span>
               )}
               {lastError && <span className="text-xs text-red-300">Last issue: {lastError}</span>}
