@@ -6,6 +6,9 @@ import {
   PayoutError,
   requestPayout,
 } from '@/lib/affiliate-store';
+import { checkRateLimit, createRateLimitResponse } from '@/lib/security/rate-limit';
+
+const PAYOUTS_RATE_LIMIT = { maxRequests: 5, windowMs: 60 * 60 * 1000, scope: 'payouts' };
 
 /**
  * GET /api/affiliates/payouts?wallet=<address>
@@ -55,6 +58,14 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { walletAddress, amount, destinationAddress, idempotencyKey } = body;
 
+    const headerKey = request.headers.get('Idempotency-Key');
+    const finalIdempotencyKey = idempotencyKey ?? headerKey ?? undefined;
+
+    const rl = checkRateLimit(request, PAYOUTS_RATE_LIMIT, finalIdempotencyKey);
+    if (rl.blocked) {
+      return createRateLimitResponse(rl, 'Too many payout requests. Please try again later.');
+    }
+
     // Validation
     if (!walletAddress || !amount || !destinationAddress) {
       return NextResponse.json(
@@ -71,14 +82,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const headerKey = request.headers.get('Idempotency-Key');
 
     try {
       const { payout, replayed } = requestPayout({
         walletAddress,
         amount,
         destinationAddress,
-        idempotencyKey: idempotencyKey ?? headerKey ?? undefined,
+        idempotencyKey: finalIdempotencyKey,
       });
 
       return NextResponse.json(

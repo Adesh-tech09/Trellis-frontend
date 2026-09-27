@@ -1,4 +1,14 @@
 import { SorobanTransactionResult } from './types';
+import {
+  AlertPreferences,
+  ALERT_PREFERENCES_KEY,
+  evaluateAlert,
+  isWithinQuietHours,
+  loadAlertPreferences as readAlertPreferences,
+  updateAlertPreferences as persistAlertPreferences,
+} from './notifications/alert-preferences';
+import { playChime } from './notifications/chime';
+import { LifecycleEventType, NotificationSeverity } from './notifications/lifecycle-types';
 
 export interface NotificationData {
   title: string;
@@ -8,6 +18,10 @@ export interface NotificationData {
   tag?: string;
   requireInteraction?: boolean;
   silent?: boolean;
+  /** Drives the chime policy; defaults to `info`. */
+  severity?: NotificationSeverity;
+  /** When set, the matching alert category can mute this notification. */
+  eventType?: LifecycleEventType;
   data?: {
     url?: string;
     transactionHash?: string;
@@ -36,6 +50,8 @@ export interface NotificationPreferences {
     end: string;
   };
   eventCategories: Record<string, boolean>;
+  webhooks: WebhookEndpoint[];
+  emailDigest: EmailDigestPreferences;
 }
 
 interface NotificationSyncMessage {
@@ -73,7 +89,19 @@ export class NotificationManager {
       governance: true,
       security_alert: true,
       trade_complete: true,
-    }
+    },
+    webhooks: [],
+    emailDigest: {
+      enabled: false,
+      email: '',
+      frequency: 'daily',
+      triggers: {
+        newProposal: true,
+        highErrorRate: true,
+        payoutExecuted: true,
+        agentMinted: true,
+      },
+    },
   };
   private vapidPublicKey: string = '';
   private isInitialized: boolean = false;
@@ -155,8 +183,37 @@ export class NotificationManager {
       if (stored) {
         this.preferences = { ...this.preferences, ...JSON.parse(stored) };
       }
+
+      this.migrateLegacyAlertPreferences();
     } catch (error) {
       console.warn('Failed to load notification preferences:', error);
+    }
+  }
+
+  /**
+   * One-time migration: before alert preferences existed, sound and quiet hours
+   * lived only on `NotificationPreferences`. Seed the richer store from them so
+   * an existing user's settings are not silently reset.
+   */
+  private migrateLegacyAlertPreferences(): void {
+    if (typeof window === 'undefined') return;
+
+    try {
+      if (localStorage.getItem(ALERT_PREFERENCES_KEY)) {
+        return;
+      }
+
+      persistAlertPreferences({
+        audioEnabled: this.preferences.soundEnabled,
+        quietHours: {
+          ...readAlertPreferences().quietHours,
+          enabled: this.preferences.quietHours.enabled,
+          start: this.preferences.quietHours.start,
+          end: this.preferences.quietHours.end,
+        },
+      });
+    } catch (error) {
+      console.warn('Failed to migrate alert preferences:', error);
     }
   }
 
@@ -176,6 +233,47 @@ export class NotificationManager {
   updatePreferences(updates: Partial<NotificationPreferences>): void {
     this.preferences = { ...this.preferences, ...updates };
     this.savePreferences();
+
+    // Keep the alert-preference store in step when the legacy screen is used.
+    const patch: Partial<AlertPreferences> = {};
+
+    if (updates.soundEnabled !== undefined) {
+      patch.audioEnabled = updates.soundEnabled;
+    }
+
+    if (updates.quietHours) {
+      patch.quietHours = { ...readAlertPreferences().quietHours, ...updates.quietHours };
+    }
+
+    if (Object.keys(patch).length > 0) {
+      persistAlertPreferences(patch);
+    }
+  }
+
+  /** Audio/quiet-hours/category policy shared with `NotificationCenter`. */
+  getAlertPreferences(): AlertPreferences {
+    return readAlertPreferences();
+  }
+
+  updateAlertPreferences(updates: Partial<AlertPreferences>): AlertPreferences {
+    const next = persistAlertPreferences(updates);
+    this.preferences = {
+      ...this.preferences,
+      soundEnabled: next.audioEnabled,
+      quietHours: {
+        enabled: next.quietHours.enabled,
+        start: next.quietHours.start,
+        end: next.quietHours.end,
+      },
+    };
+    this.savePreferences();
+    return next;
+  }
+
+  /** Preview a chime regardless of the policy (used by the settings screen). */
+  playAlertSound(severity: NotificationSeverity = 'info'): boolean {
+    const preferences = this.getAlertPreferences();
+    return playChime(severity, { volume: preferences.volume });
   }
 
   async requestPermission(): Promise<NotificationPermission> {
@@ -194,22 +292,14 @@ export class NotificationManager {
     return Notification.permission;
   }
 
-  private isInQuietHours(): boolean {
-    if (!this.preferences.quietHours.enabled) {
-      return false;
-    }
-
-    const now = new Date();
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    const { start, end } = this.preferences.quietHours;
-
-    if (start <= end) {
-      // Same day range (e.g., 22:00 to 08:00 doesn't apply here)
-      return currentTime >= start && currentTime <= end;
-    } else {
-      // Overnight range (e.g., 22:00 to 08:00)
-      return currentTime >= start || currentTime <= end;
-    }
+  /**
+   * Quiet hours, evaluated from the shared alert schedule (which supports
+   * per-day windows and crossing midnight) rather than from the legacy copy on
+   * `NotificationPreferences`. Public so settings UIs can show whether the
+   * window is active right now.
+   */
+  isInQuietHours(now: Date = new Date()): boolean {
+    return isWithinQuietHours(now, this.getAlertPreferences().quietHours);
   }
 
   async subscribeToPush(): Promise<PushSubscription | null> {
@@ -278,14 +368,111 @@ export class NotificationManager {
     return { ...this.preferences.eventCategories };
   }
 
+  getWebhooks(): WebhookEndpoint[] {
+    return this.preferences.webhooks || [];
+  }
+
+  addWebhook(webhookData: Omit<WebhookEndpoint, 'id' | 'createdAt'>): WebhookEndpoint {
+    const newWebhook: WebhookEndpoint = {
+      ...webhookData,
+      id: `wh_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: new Date().toISOString(),
+    };
+    const webhooks = [...(this.preferences.webhooks || []), newWebhook];
+    this.updatePreferences({ webhooks });
+    return newWebhook;
+  }
+
+  updateWebhook(id: string, updates: Partial<WebhookEndpoint>): WebhookEndpoint | null {
+    const webhooks = (this.preferences.webhooks || []).map((w) =>
+      w.id === id ? { ...w, ...updates } : w
+    );
+    this.updatePreferences({ webhooks });
+    return webhooks.find((w) => w.id === id) || null;
+  }
+
+  deleteWebhook(id: string): boolean {
+    const initialLen = (this.preferences.webhooks || []).length;
+    const webhooks = (this.preferences.webhooks || []).filter((w) => w.id !== id);
+    if (webhooks.length !== initialLen) {
+      this.updatePreferences({ webhooks });
+      return true;
+    }
+    return false;
+  }
+
+  getEmailDigestPreferences(): EmailDigestPreferences {
+    return this.preferences.emailDigest || {
+      enabled: false,
+      email: '',
+      frequency: 'daily',
+      triggers: {
+        newProposal: true,
+        highErrorRate: true,
+        payoutExecuted: true,
+        agentMinted: true,
+      },
+    };
+  }
+
+  updateEmailDigestPreferences(updates: Partial<EmailDigestPreferences>): void {
+    const current = this.getEmailDigestPreferences();
+    const updated = { ...current, ...updates };
+    if (updates.triggers) {
+      updated.triggers = { ...current.triggers, ...updates.triggers };
+    }
+    this.updatePreferences({ emailDigest: updated });
+  }
+
+  async triggerWebhooks(
+    event: WebhookEventTrigger,
+    payloadData: Record<string, any>
+  ): Promise<Array<{ endpointId: string; success: boolean; status?: number; error?: string }>> {
+    const webhooks = this.getWebhooks().filter((w) => w.enabled && w.triggers.includes(event));
+    const results = [];
+
+    for (const endpoint of webhooks) {
+      const res = await dispatchWebhookPayload(endpoint, event, payloadData);
+      this.updateWebhook(endpoint.id, {
+        lastTriggeredAt: new Date().toISOString(),
+        lastStatus: res.success ? 'success' : 'failed',
+      });
+      results.push({
+        endpointId: endpoint.id,
+        ...res,
+      });
+    }
+
+    return results;
+  }
+
   async showNotification(data: NotificationData): Promise<void> {
     if (!this.preferences.enabled) {
       return;
     }
 
-    if (this.isInQuietHours()) {
+    const severity = data.severity ?? 'info';
+    const alertPreferences = this.getAlertPreferences();
+    // One policy decides both the chime and whether the notification surfaces:
+    // category mutes always win, quiet hours only silence non-critical alerts
+    // (unless the user opted into muting critical ones too).
+    const decision = evaluateAlert(alertPreferences, {
+      severity,
+      eventType: data.eventType,
+    });
+
+    if (decision.reason === 'category_muted') {
+      console.log('Notification suppressed by category mute');
+      return;
+    }
+
+    if (decision.reason === 'quiet_hours') {
       console.log('Notification suppressed due to quiet hours');
       return;
+    }
+
+    if (decision.play) {
+      playChime(severity, { volume: alertPreferences.volume });
     }
 
     const permission = await this.getCurrentPermission();
@@ -372,6 +559,8 @@ export class NotificationManager {
         title: 'Trade Successful! 🎉',
         body: `Successfully completed transaction for ${agentName}${amount ? ` (${amount})` : ''}`,
         tag: 'trade-success',
+        severity: 'success',
+        eventType: 'simulation_completed',
         data: {
           type: 'trade',
           transactionHash: transactionResult.hash,
@@ -399,6 +588,8 @@ export class NotificationManager {
         body: `Transaction failed for ${agentName}: ${transactionResult.error}`,
         tag: 'trade-error',
         requireInteraction: true,
+        severity: 'critical',
+        eventType: 'simulation_failed',
         data: {
           type: 'trade',
           transactionHash: transactionResult.hash,
@@ -427,6 +618,8 @@ export class NotificationManager {
         title: 'Transaction Complete ✅',
         body: description,
         tag: 'transaction-success',
+        severity: 'success',
+        severity: 'success',
         data: {
           type: 'transaction',
           transactionHash: transactionResult.hash,
@@ -440,6 +633,8 @@ export class NotificationManager {
         body: `${description}: ${transactionResult.error}`,
         tag: 'transaction-error',
         requireInteraction: true,
+        severity: 'critical',
+        eventType: 'transaction_failed',
         data: {
           type: 'transaction',
           transactionHash: transactionResult.hash,

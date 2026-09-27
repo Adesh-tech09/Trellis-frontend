@@ -17,8 +17,8 @@ export interface BugReport {
   rewardStatus: 'pending' | 'approved' | 'paid' | 'rejected';
   assignedTo?: string;
   resolutionNotes?: string;
-  /** Application build/version tag the report was filed against (e.g. "v0.1.0"). */
-  buildVersion?: string;
+  githubIssueNumber?: number;
+  githubIssueUrl?: string;
 }
 
 export interface BugReportSubmission {

@@ -10,12 +10,14 @@
  * - Project Config & Build Readiness
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statfsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import https from 'node:https';
+import os from 'node:os';
+import net from 'node:net';
 
 const ROOT_DIR = resolve(process.cwd());
 
@@ -139,12 +141,22 @@ export function checkConfiguration() {
   const envPath = join(ROOT_DIR, '.env');
 
   // .env.example template check
+  let requiredKeys = [];
   if (existsSync(envExamplePath)) {
     results.push({
       name: '.env.example Template',
       status: 'pass',
       message: 'Template .env.example exists and readable',
     });
+    const exContent = readFileSync(envExamplePath, 'utf-8');
+    for (const line of exContent.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx !== -1) {
+        requiredKeys.push(trimmed.slice(0, eqIdx).trim());
+      }
+    }
   } else {
     results.push({
       name: '.env.example Template',
@@ -174,6 +186,24 @@ export function checkConfiguration() {
         const key = trimmed.slice(0, eqIdx).trim();
         const val = trimmed.slice(eqIdx + 1).trim();
         parsedVars[key] = val;
+      }
+    }
+
+    if (requiredKeys.length > 0) {
+      const missingKeys = requiredKeys.filter(k => !(k in parsedVars));
+      if (missingKeys.length > 0) {
+        results.push({
+          name: 'Environment Variables Sync',
+          status: 'fail',
+          message: `Missing required environment variables in ${activeEnvFile}: ${missingKeys.join(', ')}`,
+          remediation: `Add the missing variables to ${activeEnvFile} as defined in .env.example.`
+        });
+      } else {
+        results.push({
+          name: 'Environment Variables Sync',
+          status: 'pass',
+          message: `All keys from .env.example are present in ${activeEnvFile}`,
+        });
       }
     }
 
@@ -419,6 +449,99 @@ export async function checkDatabaseAndFixtures() {
 }
 
 /**
+ * 6. Check System Requirements
+ */
+export function checkSystemRequirements() {
+  const results = [];
+  
+  // memory
+  const totalRamGb = os.totalmem() / (1024 ** 3);
+  if (totalRamGb >= 4) {
+    results.push({ name: 'System Memory', status: 'pass', message: `Total RAM is ${totalRamGb.toFixed(1)}GB (>= 4GB)`});
+  } else {
+    results.push({ name: 'System Memory', status: 'warn', message: `Total RAM is ${totalRamGb.toFixed(1)}GB, Next.js build may struggle with < 4GB`, remediation: 'Close other applications or upgrade RAM.'});
+  }
+
+  // disk
+  try {
+     const stat = statfsSync(ROOT_DIR);
+     const freeGb = (stat.bfree * stat.bsize) / (1024 ** 3);
+     if (freeGb >= 1) {
+       results.push({ name: 'Disk Space', status: 'pass', message: `Free disk space is ${freeGb.toFixed(1)}GB (>= 1GB)`});
+     } else {
+       results.push({ name: 'Disk Space', status: 'warn', message: `Free disk space is ${freeGb.toFixed(1)}GB, < 1GB recommended for build`, remediation: 'Free up some disk space.'});
+     }
+  } catch (e) {
+     results.push({ name: 'Disk Space', status: 'warn', message: 'Could not determine free disk space', remediation: 'Ensure you have enough disk space for build.' });
+  }
+  return results;
+}
+
+/**
+ * 7. Check Local Ports
+ */
+export async function checkLocalPorts() {
+  const results = [];
+  const ports = [3000, 8080];
+  for (const port of ports) {
+    try {
+      const isOccupied = await new Promise((resolve) => {
+        const srv = net.createServer();
+        srv.once('error', (err) => {
+          if (err.code === 'EADDRINUSE') resolve(true);
+          else resolve(false);
+        });
+        srv.once('listening', () => {
+          srv.close();
+          resolve(false);
+        });
+        srv.listen(port, '127.0.0.1');
+      });
+
+      if (isOccupied) {
+        let processDetails = 'unknown process';
+        try {
+          if (process.platform === 'win32') {
+             const netstat = execSync(`netstat -ano | findstr :${port}`).toString();
+             const lines = netstat.trim().split('\n').filter(l => l.includes(`:${port}`));
+             if (lines.length > 0) {
+                 const pid = lines[0].trim().split(/\s+/).pop();
+                 const tasklist = execSync(`tasklist | findstr ${pid}`).toString();
+                 processDetails = `PID ${pid} (${tasklist.trim().split(/\s+/)[0]})`;
+             }
+          } else {
+             const lsof = execSync(`lsof -i :${port} -t`).toString().trim();
+             if (lsof) {
+                 const ps = execSync(`ps -p ${lsof.split('\n')[0]} -o comm=`).toString().trim();
+                 processDetails = `PID ${lsof.split('\n')[0]} (${ps})`;
+             }
+          }
+        } catch(e) {}
+        results.push({
+          name: `Local Port ${port}`,
+          status: 'fail',
+          message: `Port ${port} is currently in use by ${processDetails}`,
+          remediation: `Stop the process using port ${port} or change the port configuration.`
+        });
+      } else {
+        results.push({
+          name: `Local Port ${port}`,
+          status: 'pass',
+          message: `Port ${port} is available`
+        });
+      }
+    } catch (err) {
+      results.push({
+        name: `Local Port ${port}`,
+        status: 'fail',
+        message: `Failed to check port ${port}: ${err.message}`
+      });
+    }
+  }
+  return results;
+}
+
+/**
  * Main Diagnostics Runner
  */
 export async function runDiagnostics(options = {}) {
@@ -430,6 +553,8 @@ export async function runDiagnostics(options = {}) {
     { name: 'Project Dependencies & Setup', results: checkDependencies() },
     { name: 'Service Connectivity & Network', results: await checkConnectivity(skipNetwork) },
     { name: 'Database & Fixture Integrity', results: await checkDatabaseAndFixtures() },
+    { name: 'System Requirements', results: checkSystemRequirements() },
+    { name: 'Local Ports', results: await checkLocalPorts() },
   ];
 
   let total = 0;

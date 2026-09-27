@@ -43,3 +43,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check bundle budget and duplicate dependencies
+        run: npm run analyze:budget
