@@ -115,6 +115,7 @@ Types:
 - Test edge cases and error conditions
 - Use React Testing Library for component tests
 - Mock external API calls and blockchain interactions
+- **Local Fixtures:** Use the deterministic fixture generator (`lib/fixtures/generator.ts`) to produce stable, realistic mocked data for tests and local component development. Example usage: `new FixtureGenerator(42).generateAgent('normal')`. Scenarios such as `normal`, `edge`, and `failure` are supported for various domain types to ensure UI robustness without relying on brittle static data.
 
 ## 🐛 Submitting Bug Reports
 
