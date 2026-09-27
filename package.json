@@ -45,6 +45,7 @@
     "react-i18next": "~17.0.4",
     "react-window": "~2.2.7",
     "recharts": "^2.12.7",
+    "snarkjs": "^0.7.5",
     "sonner": "^2.0.7",
     "stylis-plugin-rtl": "^2.1.1",
     "use-debounce": "^10.1.0",
