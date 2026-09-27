@@ -5,6 +5,7 @@ import { ProvenanceRecord, ProvenanceFilter as FilterType } from "../../../lib/p
 import { provenanceService } from "../../../lib/provenance/service";
 import { provenanceExport } from "../../../lib/provenance/export";
 import ProvenanceFilter from "./ProvenanceFilter";
+import MerkleProofInspector from "./MerkleProofInspector";
 
 export default function ProvenanceExplorer() {
   const [records, setRecords] = useState<ProvenanceRecord[]>([]);
@@ -169,6 +170,10 @@ export default function ProvenanceExplorer() {
                       </div>
                     )}
                   </div>
+
+                  {record.details.proof && record.txHash && (
+                    <MerkleProofInspector proof={record.details.proof} txHash={record.txHash} />
+                  )}
                 </div>
               </div>
             ))}
