@@ -50,6 +50,8 @@ export interface NotificationPreferences {
     end: string;
   };
   eventCategories: Record<string, boolean>;
+  webhooks: WebhookEndpoint[];
+  emailDigest: EmailDigestPreferences;
 }
 
 interface NotificationSyncMessage {
@@ -87,7 +89,19 @@ export class NotificationManager {
       governance: true,
       security_alert: true,
       trade_complete: true,
-    }
+    },
+    webhooks: [],
+    emailDigest: {
+      enabled: false,
+      email: '',
+      frequency: 'daily',
+      triggers: {
+        newProposal: true,
+        highErrorRate: true,
+        payoutExecuted: true,
+        agentMinted: true,
+      },
+    },
   };
   private vapidPublicKey: string = '';
   private isInitialized: boolean = false;
@@ -352,6 +366,84 @@ export class NotificationManager {
 
   getEventCategories(): Record<string, boolean> {
     return { ...this.preferences.eventCategories };
+  }
+
+  getWebhooks(): WebhookEndpoint[] {
+    return this.preferences.webhooks || [];
+  }
+
+  addWebhook(webhookData: Omit<WebhookEndpoint, 'id' | 'createdAt'>): WebhookEndpoint {
+    const newWebhook: WebhookEndpoint = {
+      ...webhookData,
+      id: `wh_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: new Date().toISOString(),
+    };
+    const webhooks = [...(this.preferences.webhooks || []), newWebhook];
+    this.updatePreferences({ webhooks });
+    return newWebhook;
+  }
+
+  updateWebhook(id: string, updates: Partial<WebhookEndpoint>): WebhookEndpoint | null {
+    const webhooks = (this.preferences.webhooks || []).map((w) =>
+      w.id === id ? { ...w, ...updates } : w
+    );
+    this.updatePreferences({ webhooks });
+    return webhooks.find((w) => w.id === id) || null;
+  }
+
+  deleteWebhook(id: string): boolean {
+    const initialLen = (this.preferences.webhooks || []).length;
+    const webhooks = (this.preferences.webhooks || []).filter((w) => w.id !== id);
+    if (webhooks.length !== initialLen) {
+      this.updatePreferences({ webhooks });
+      return true;
+    }
+    return false;
+  }
+
+  getEmailDigestPreferences(): EmailDigestPreferences {
+    return this.preferences.emailDigest || {
+      enabled: false,
+      email: '',
+      frequency: 'daily',
+      triggers: {
+        newProposal: true,
+        highErrorRate: true,
+        payoutExecuted: true,
+        agentMinted: true,
+      },
+    };
+  }
+
+  updateEmailDigestPreferences(updates: Partial<EmailDigestPreferences>): void {
+    const current = this.getEmailDigestPreferences();
+    const updated = { ...current, ...updates };
+    if (updates.triggers) {
+      updated.triggers = { ...current.triggers, ...updates.triggers };
+    }
+    this.updatePreferences({ emailDigest: updated });
+  }
+
+  async triggerWebhooks(
+    event: WebhookEventTrigger,
+    payloadData: Record<string, any>
+  ): Promise<Array<{ endpointId: string; success: boolean; status?: number; error?: string }>> {
+    const webhooks = this.getWebhooks().filter((w) => w.enabled && w.triggers.includes(event));
+    const results = [];
+
+    for (const endpoint of webhooks) {
+      const res = await dispatchWebhookPayload(endpoint, event, payloadData);
+      this.updateWebhook(endpoint.id, {
+        lastTriggeredAt: new Date().toISOString(),
+        lastStatus: res.success ? 'success' : 'failed',
+      });
+      results.push({
+        endpointId: endpoint.id,
+        ...res,
+      });
+    }
+
+    return results;
   }
 
   async showNotification(data: NotificationData): Promise<void> {
