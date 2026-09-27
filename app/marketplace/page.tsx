@@ -173,6 +173,7 @@ export default function Marketplace() {
               {visible.map((agent) => (
                   <div
                     key={agent.id}
+                    onClick={() => trackAgentInteraction(agent.name, agent.description)}
                     className="p-6 md:p-8 rounded-2xl border border-trellis-vine/20 hover:border-trellis-leaf/50 hover:shadow-xl hover:shadow-trellis-leaf/10 transition-all duration-300 nebula-bg cursor-pointer group flex flex-col h-full active:scale-[0.98] touch-manipulation"
                   >
                     <div className="text-4xl mb-6 bg-white/5 w-16 h-16 flex items-center justify-center rounded-2xl group-hover:scale-110 transition-smooth">

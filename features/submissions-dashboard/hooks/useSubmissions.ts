@@ -8,6 +8,8 @@ interface UseSubmissionsResult {
   loading: boolean;
 }
 
+import { scanSubmissionContent } from "../utils/scanner";
+
 const normalizeSubmission = (input: unknown): Submission | null => {
   if (typeof input !== "object" || input === null) {
     return null;
@@ -22,6 +24,10 @@ const normalizeSubmission = (input: unknown): Submission | null => {
   const timestamp: string | number =
     typeof rawTimestamp === "number" ? rawTimestamp : String(rawTimestamp);
   const error = item.error ? String(item.error) : undefined;
+  
+  // Extract content, default to empty string if missing
+  const content = String(item.content ?? item.code ?? item.description ?? "");
+  const securityScan = scanSubmissionContent(content);
 
   if (!id || !txHash) {
     return null;
@@ -32,6 +38,8 @@ const normalizeSubmission = (input: unknown): Submission | null => {
     txHash,
     status,
     timestamp,
+    content,
+    securityScan,
   };
 
   if (error) {

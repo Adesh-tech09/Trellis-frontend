@@ -19,6 +19,7 @@ export function SubmissionTable({ submissions }: SubmissionTableProps) {
             <th className="px-3 py-2">Tx Hash</th>
             <th className="px-3 py-2">Status</th>
             <th className="px-3 py-2">Timestamp</th>
+            <th className="px-3 py-2">Security Score</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 bg-white">
@@ -30,6 +31,37 @@ export function SubmissionTable({ submissions }: SubmissionTableProps) {
                 <StatusBadge status={submission.status} />
               </td>
               <td className="px-3 py-2 align-top">{String(submission.timestamp)}</td>
+              <td className="px-3 py-2 align-top">
+                {submission.securityScan ? (
+                  <div className="flex flex-col gap-2">
+                    <span
+                      className={`inline-block px-2 py-1 text-xs font-semibold rounded ${
+                        submission.securityScan.score === "Passed"
+                          ? "bg-green-100 text-green-800"
+                          : submission.securityScan.score === "Warning"
+                          ? "bg-yellow-100 text-yellow-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {submission.securityScan.score}
+                    </span>
+                    {submission.securityScan.flags.length > 0 && (
+                      <div className="text-xs text-slate-600 mt-1">
+                        {submission.securityScan.flags.map((flag, idx) => (
+                          <div key={idx} className="mb-2 bg-slate-50 p-2 rounded border border-slate-200">
+                            <strong>{flag.type}:</strong> {flag.message}
+                            <div className="mt-1 text-blue-700">
+                              <em>Remediation:</em> {flag.remediation}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-slate-400 italic">Not scanned</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>

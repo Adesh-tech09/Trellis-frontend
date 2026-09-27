@@ -1,3 +1,5 @@
+import { SecurityScanResult } from "./utils/scanner";
+
 export type SubmissionStatus = "pending" | "success" | "failed" | string;
 
 export interface Submission {
@@ -6,5 +8,7 @@ export interface Submission {
   status: SubmissionStatus;
   timestamp: string | number;
   error?: string;
+  content?: string;
+  securityScan?: SecurityScanResult;
   [key: string]: unknown;
 }
