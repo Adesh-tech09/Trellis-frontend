@@ -4,6 +4,11 @@ import {
   isImpersonationActive,
   getImpersonationSession,
   canPerformActionInImpersonation,
+  recordImpersonationAction,
+  getImpersonationAuditLog,
+  getActiveSessions,
+  getSessionsForAdmin,
+  getSessionsForTarget,
   impersonationManager,
 } from '@/lib/impersonation';
 
@@ -236,6 +241,81 @@ describe('Impersonation Manager', () => {
       const session = startImpersonation('admin1', 'user1', 'read_only', 0.001);
 
       expect(canPerformActionInImpersonation(session.id, 'view_user_data')).toBe(false);
+    });
+
+    it('should throw when impersonating self', () => {
+      expect(() => startImpersonation('user1', 'user1', 'read_only')).toThrow('Cannot impersonate yourself');
+    });
+
+    it('should throw for invalid session parameters', () => {
+      expect(() => startImpersonation('', 'user1', 'read_only')).toThrow();
+      expect(() => startImpersonation('admin1', '', 'read_only')).toThrow();
+    });
+  });
+
+  describe('Session Tracking', () => {
+    it('should track sessions by target user', () => {
+      const session1 = startImpersonation('admin1', 'user1', 'read_only');
+      const session2 = startImpersonation('admin2', 'user1', 'debug');
+      const session3 = startImpersonation('admin1', 'user2', 'limited_write');
+
+      const user1Sessions = getSessionsForTarget('user1');
+      expect(user1Sessions.length).toBeGreaterThanOrEqual(2);
+
+      const user1Admins = user1Sessions.map((s) => s.adminId);
+      expect(user1Admins).toContain('admin1');
+      expect(user1Admins).toContain('admin2');
+    });
+
+    it('should get session statistics', () => {
+      const session1 = startImpersonation('admin1', 'user1', 'read_only');
+      const session2 = startImpersonation('admin1', 'user2', 'debug');
+
+      const stats = impersonationManager.getSessionStats();
+      expect(stats.active).toBeGreaterThanOrEqual(2);
+      expect(stats.total).toBeGreaterThanOrEqual(2);
+      expect(stats.expired).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should support session metadata', () => {
+      const session = startImpersonation(
+        'admin1',
+        'user1',
+        'read_only',
+        30,
+        {
+          reason: 'User reported transaction issue',
+          ipAddress: '192.168.1.1',
+        }
+      );
+
+      expect(session.reason).toBe('User reported transaction issue');
+      const auditLog = getImpersonationAuditLog(session.id);
+      expect(auditLog[0].metadata?.ipAddress).toBe('192.168.1.1');
+    });
+  });
+
+  describe('Exported Helper Functions', () => {
+    it('should export action recording function', () => {
+      const session = startImpersonation('admin1', 'user1', 'read_only');
+      recordImpersonationAction(session.id, 'view_wallet', 'wallet:wallet1', 'success');
+
+      const log = getImpersonationAuditLog(session.id);
+      const actionEvent = log.find((e) => e.action === 'view_wallet');
+      expect(actionEvent).toBeDefined();
+    });
+
+    it('should export session query functions', () => {
+      const session = startImpersonation('admin1', 'user1', 'read_only');
+
+      const active = getActiveSessions();
+      expect(active.length).toBeGreaterThan(0);
+
+      const adminSessions = getSessionsForAdmin('admin1');
+      expect(adminSessions.length).toBeGreaterThan(0);
+
+      const targetSessions = getSessionsForTarget('user1');
+      expect(targetSessions.length).toBeGreaterThan(0);
     });
   });
 });

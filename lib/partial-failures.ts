@@ -2,7 +2,22 @@ import { z } from 'zod';
 
 /**
  * Partial failure dashboard for background and external integrations
- * Tracks operations stuck between internal state and external systems
+ *
+ * Features:
+ * - Track operations stuck between internal state and external systems
+ * - Group failures by type, severity, age, and retryability
+ * - Automatic retry scheduling with exponential backoff
+ * - Stale failure detection and alerting
+ * - Manual intervention workflow support
+ * - Comprehensive diagnostic data capture
+ * - Dashboard reporting and analytics
+ *
+ * Usage:
+ * 1. Record failures when operations fail
+ * 2. System auto-detects retryable failures
+ * 3. Retry scheduling with exponential backoff
+ * 4. Dashboard shows stale, critical, and retryable failures
+ * 5. Admins can retry, resolve, or mark for manual review
  */
 
 export type FailureSeverity = 'low' | 'medium' | 'high' | 'critical';
@@ -37,6 +52,7 @@ export interface FailureGroup {
   oldest: string;
   newest: string;
   affectedResources: Set<string>;
+  averageAge: number; // in milliseconds
 }
 
 export interface FailureReport {
@@ -51,13 +67,20 @@ export interface FailureReport {
   retryableFailures: PartialFailure[];
 }
 
+export interface RetryPolicy {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  backoffMultiplier: number;
+}
+
 export const PartialFailureSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   operationType: z.enum(['transaction', 'sync', 'webhook', 'import', 'export', 'background_job']),
-  operationId: z.string(),
+  operationId: z.string().min(1),
   internalState: z.record(z.unknown()),
   externalRefId: z.string().optional(),
-  errorMessage: z.string(),
+  errorMessage: z.string().min(1),
   severity: z.enum(['low', 'medium', 'high', 'critical']),
   status: z.enum(['unresolved', 'retrying', 'resolved', 'manual_intervention']),
   createdAt: z.string().datetime(),
@@ -72,24 +95,52 @@ export const PartialFailureSchema = z.object({
   diagnosticData: z.record(z.unknown()).optional(),
 });
 
+/**
+ * Default retry policy configuration
+ */
+const defaultRetryPolicy: RetryPolicy = {
+  maxRetries: 3,
+  initialDelayMs: 60000, // 1 minute
+  maxDelayMs: 24 * 60 * 60 * 1000, // 24 hours
+  backoffMultiplier: 2,
+};
+
+/**
+ * PartialFailureTracker: Manages partial failure tracking and recovery
+ *
+ * Key responsibilities:
+ * - Recording failures when operations fail partially
+ * - Detecting retry-able vs non-retryable failures
+ * - Scheduling retries with exponential backoff
+ * - Tracking stale failures for operator attention
+ * - Providing failure dashboard and analytics
+ * - Supporting manual intervention workflows
+ */
 class PartialFailureTracker {
   private failures: Map<string, PartialFailure> = new Map();
-  private failuresByType: Map<OperationType, string[]> = new Map();
-  private failuresByResource: Map<string, string[]> = new Map();
+  private failuresByType: Map<OperationType, Set<string>> = new Map();
+  private failuresByResource: Map<string, Set<string>> = new Map();
+  private failuresByStatus: Map<FailureStatus, Set<string>> = new Map();
   private staleAfterMs: number = 7 * 24 * 60 * 60 * 1000; // 7 days
-  private maxRetries: number = 3;
-  private retryDelayMs: number = 60000; // 1 minute
+  private retryPolicy: RetryPolicy = defaultRetryPolicy;
 
   setStaleThreshold(ms: number): void {
+    if (ms <= 0) {
+      throw new Error('Stale threshold must be positive');
+    }
     this.staleAfterMs = ms;
   }
 
-  setMaxRetries(max: number): void {
-    this.maxRetries = max;
-  }
+  setRetryPolicy(policy: Partial<RetryPolicy>): void {
+    this.retryPolicy = { ...this.retryPolicy, ...policy };
 
-  setRetryDelay(ms: number): void {
-    this.retryDelayMs = ms;
+    // Validate policy
+    if (this.retryPolicy.maxRetries <= 0) {
+      throw new Error('Max retries must be positive');
+    }
+    if (this.retryPolicy.initialDelayMs <= 0) {
+      throw new Error('Initial delay must be positive');
+    }
   }
 
   recordFailure(
@@ -100,12 +151,17 @@ class PartialFailureTracker {
     externalRefId?: string,
     severity: FailureSeverity = 'medium'
   ): PartialFailure {
+    if (!operationType || !operationId || !errorMessage) {
+      throw new Error('operationType, operationId, and errorMessage are required');
+    }
+
     const now = new Date();
+    const failureId = this.generateId();
     const failure: PartialFailure = {
-      id: this.generateId(),
+      id: failureId,
       operationType,
       operationId,
-      internalState,
+      internalState: { ...internalState },
       externalRefId,
       errorMessage,
       severity,
@@ -113,33 +169,40 @@ class PartialFailureTracker {
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       retryCount: 0,
-      maxRetries: this.maxRetries,
+      maxRetries: this.retryPolicy.maxRetries,
       canRetry: this.isRetryable(operationType),
       canIgnore: this.isIgnorable(severity),
       diagnosticData: {
-        stackTrace: 'auto-captured',
         environment: 'production',
+        timestamp: now.getTime(),
       },
     };
 
+    // Validate failure schema
     try {
       PartialFailureSchema.parse(failure);
     } catch (error) {
-      throw new Error('Invalid failure data');
+      throw new Error(`Invalid failure data: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    this.failures.set(failure.id, failure);
+    // Store failure
+    this.failures.set(failureId, failure);
 
     // Track by type
-    const typeFailures = this.failuresByType.get(operationType) || [];
-    typeFailures.push(failure.id);
+    const typeFailures = this.failuresByType.get(operationType) || new Set();
+    typeFailures.add(failureId);
     this.failuresByType.set(operationType, typeFailures);
 
     // Track by resource
     const resourceId = (internalState.resourceId as string) || 'unknown';
-    const resourceFailures = this.failuresByResource.get(resourceId) || [];
-    resourceFailures.push(failure.id);
+    const resourceFailures = this.failuresByResource.get(resourceId) || new Set();
+    resourceFailures.add(failureId);
     this.failuresByResource.set(resourceId, resourceFailures);
+
+    // Track by status
+    const statusFailures = this.failuresByStatus.get('unresolved') || new Set();
+    statusFailures.add(failureId);
+    this.failuresByStatus.set('unresolved', statusFailures);
 
     return failure;
   }
@@ -155,7 +218,7 @@ class PartialFailureTracker {
     }
 
     if (failure.retryCount >= failure.maxRetries) {
-      throw new Error('Max retries exceeded');
+      throw new Error(`Max retries (${failure.maxRetries}) exceeded`);
     }
 
     if (!failure.canRetry) {
@@ -167,11 +230,13 @@ class PartialFailureTracker {
     failure.lastAttemptAt = new Date().toISOString();
     failure.updatedAt = new Date().toISOString();
 
-    // Schedule next retry
+    // Schedule next retry with exponential backoff
     if (failure.retryCount < failure.maxRetries) {
-      const nextRetryTime = new Date(
-        Date.now() + this.retryDelayMs * Math.pow(2, failure.retryCount - 1) // Exponential backoff
+      const backoffMs = Math.min(
+        this.retryPolicy.initialDelayMs * Math.pow(this.retryPolicy.backoffMultiplier, failure.retryCount - 1),
+        this.retryPolicy.maxDelayMs
       );
+      const nextRetryTime = new Date(Date.now() + backoffMs);
       failure.nextRetryAt = nextRetryTime.toISOString();
     }
 
@@ -188,6 +253,15 @@ class PartialFailureTracker {
     failure.resolutionNotes = notes;
     failure.updatedAt = new Date().toISOString();
 
+    // Update status tracking
+    const unresolvedSet = this.failuresByStatus.get('unresolved');
+    if (unresolvedSet) {
+      unresolvedSet.delete(failureId);
+    }
+    const resolvedSet = this.failuresByStatus.get('resolved') || new Set();
+    resolvedSet.add(failureId);
+    this.failuresByStatus.set('resolved', resolvedSet);
+
     return true;
   }
 
@@ -200,6 +274,15 @@ class PartialFailureTracker {
     failure.status = 'manual_intervention';
     failure.resolutionNotes = notes || 'Marked for manual review';
     failure.updatedAt = new Date().toISOString();
+
+    // Update status tracking
+    const unresolvedSet = this.failuresByStatus.get('unresolved');
+    if (unresolvedSet) {
+      unresolvedSet.delete(failureId);
+    }
+    const manualSet = this.failuresByStatus.get('manual_intervention') || new Set();
+    manualSet.add(failureId);
+    this.failuresByStatus.set('manual_intervention', manualSet);
 
     return true;
   }
@@ -222,14 +305,24 @@ class PartialFailureTracker {
   }
 
   getFailuresByType(operationType: OperationType): PartialFailure[] {
-    const failureIds = this.failuresByType.get(operationType) || [];
-    return failureIds
+    const failureIds = this.failuresByType.get(operationType) || new Set();
+    return Array.from(failureIds)
       .map((id) => this.getFailure(id))
-      .filter((failure) => failure !== null) as PartialFailure[];
+      .filter((failure): failure is PartialFailure => failure !== null);
   }
 
   getFailuresByStatus(status: FailureStatus): PartialFailure[] {
-    return Array.from(this.failures.values()).filter((failure) => failure.status === status);
+    const failureIds = this.failuresByStatus.get(status) || new Set();
+    return Array.from(failureIds)
+      .map((id) => this.getFailure(id))
+      .filter((failure): failure is PartialFailure => failure !== null);
+  }
+
+  getFailuresByResource(resourceId: string): PartialFailure[] {
+    const failureIds = this.failuresByResource.get(resourceId) || new Set();
+    return Array.from(failureIds)
+      .map((id) => this.getFailure(id))
+      .filter((failure): failure is PartialFailure => failure !== null);
   }
 
   getCriticalFailures(): PartialFailure[] {
@@ -308,6 +401,7 @@ class PartialFailureTracker {
 
   private groupFailures(failures: PartialFailure[]): FailureGroup[] {
     const groups = new Map<string, FailureGroup>();
+    const now = Date.now();
 
     failures.forEach((failure) => {
       const key = `${failure.operationType}:${failure.severity}`;
@@ -320,6 +414,7 @@ class PartialFailureTracker {
           oldest: failure.createdAt,
           newest: failure.updatedAt,
           affectedResources: new Set(),
+          averageAge: 0,
         });
       }
 
@@ -337,23 +432,30 @@ class PartialFailureTracker {
       group.affectedResources.add(resourceId);
     });
 
+    // Calculate average age for each group
+    groups.forEach((group) => {
+      const groupFailures = failures.filter(
+        (f) => f.operationType === group.operationType && f.severity === group.severity
+      );
+      if (groupFailures.length > 0) {
+        const totalAge = groupFailures.reduce((sum, f) => sum + (now - new Date(f.createdAt).getTime()), 0);
+        group.averageAge = Math.floor(totalAge / groupFailures.length);
+      }
+    });
+
     return Array.from(groups.values());
   }
 
   private isRetryable(operationType: OperationType): boolean {
-    // Transactions, syncs, and webhooks can be retried
-    // Imports/exports and jobs may need manual intervention
     return ['transaction', 'sync', 'webhook'].includes(operationType);
   }
 
   private isIgnorable(severity: FailureSeverity): boolean {
-    // Only low and medium severity failures can be ignored
     return ['low', 'medium'].includes(severity);
   }
 
   private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) +
-           Math.random().toString(36).substring(2, 15);
+    return `fail_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
   }
 
   getAllFailures(): PartialFailure[] {
@@ -371,6 +473,11 @@ class PartialFailureTracker {
 
     resolved.forEach((id) => {
       this.failures.delete(id);
+      // Clean up from tracking maps
+      const resolvedSet = this.failuresByStatus.get('resolved');
+      if (resolvedSet) {
+        resolvedSet.delete(id);
+      }
     });
 
     return resolved.length;
@@ -378,6 +485,8 @@ class PartialFailureTracker {
 }
 
 export const partialFailureTracker = new PartialFailureTracker();
+
+// Exported helper functions
 
 export function recordFailure(
   operationType: OperationType,
@@ -405,8 +514,40 @@ export function markFailureResolved(failureId: string, notes?: string): boolean 
   return partialFailureTracker.markResolved(failureId, notes);
 }
 
+export function markFailureManualIntervention(failureId: string, notes?: string): boolean {
+  return partialFailureTracker.markManualIntervention(failureId, notes);
+}
+
+export function ignoreFailure(failureId: string, reason?: string): boolean {
+  return partialFailureTracker.ignoreFailure(failureId, reason);
+}
+
+export function getFailure(failureId: string): PartialFailure | null {
+  return partialFailureTracker.getFailure(failureId);
+}
+
+export function getFailuresByType(operationType: OperationType): PartialFailure[] {
+  return partialFailureTracker.getFailuresByType(operationType);
+}
+
+export function getFailuresByStatus(status: FailureStatus): PartialFailure[] {
+  return partialFailureTracker.getFailuresByStatus(status);
+}
+
+export function getFailuresByResource(resourceId: string): PartialFailure[] {
+  return partialFailureTracker.getFailuresByResource(resourceId);
+}
+
 export function getCriticalFailures(): PartialFailure[] {
   return partialFailureTracker.getCriticalFailures();
+}
+
+export function getStaleFailures(beforeMs?: number): PartialFailure[] {
+  return partialFailureTracker.getStaleFailures(beforeMs);
+}
+
+export function getRetryableFailures(): PartialFailure[] {
+  return partialFailureTracker.getRetryableFailures();
 }
 
 export function getFailureReport(): FailureReport {
