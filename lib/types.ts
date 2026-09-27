@@ -47,6 +47,7 @@ export interface StellarNetworkConfig {
   displayName: string;
   horizonUrl: string;
   rpcUrl?: string;
+  rpcFallbackUrls?: string[];
   networkPassphrase: string;
   color: string;
   badge: string;
@@ -68,11 +69,23 @@ export interface StellarWallet {
   network: StellarNetwork;
 }
 
+export type RpcConnectionStatus = "connected" | "degraded" | "offline";
+
+export interface RpcConnectionStatusInfo {
+  status: RpcConnectionStatus;
+  activeNode: string | null;
+  fallbackNodes: number;
+  latencyMs: number;
+  warning?: string;
+  lastError?: string;
+}
+
 export interface WalletContextType {
   wallet: StellarWallet | null;
   network: StellarNetwork;
   isConnecting: boolean;
   error: string | null;
+  rpcStatus: RpcConnectionStatusInfo;
   connectWallet: (
     walletType: "freighter" | "albedo" | "ledger",
   ) => Promise<void>;
