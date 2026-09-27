@@ -1,5 +1,6 @@
 import { MultiAssetStakingEngine } from "@/lib/staking/engine";
 import { TokenInterface } from "@/lib/staking/types";
+import AutoCompoundPanel from "@/components/staking/AutoCompoundPanel";
 
 const rewardToken: TokenInterface = {
   contractId: "REWARD",
@@ -209,6 +210,7 @@ export default function StakingPage() {
             </div>
           </div>
         </section>
+        <AutoCompoundPanel />
       </section>
     </main>
   );
