@@ -79,14 +79,32 @@ export default function Marketplace() {
             <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-4">
               <h2 className="text-2xl md:text-3xl font-bold text-white glow-text">All Agents</h2>
               <div className="flex gap-2">
-                <button className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm hover:bg-white/10 transition-smooth">
+                <button className="min-h-[44px] px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-200 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-trellis-leaf transition-smooth touch-manipulation">
                   Filters
                 </button>
-                <select className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm hover:bg-white/10 transition-smooth bg-trellis-ground outline-none">
-                  <option>Popularity</option>
-                  <option>Newest</option>
-                  <option>Rating</option>
-                </select>
+                {/*
+                  Native select chrome (arrow, padding, background) is drawn
+                  differently by every engine, so the control opts out of it
+                  (appearance-none) and draws its own indicator instead. See
+                  e2e/viewport.spec.ts, which asserts the consistency.
+                */}
+                <div className="relative flex items-center">
+                  <select
+                    aria-label="Sort agents"
+                    defaultValue="Popularity"
+                    className="appearance-none min-h-[44px] px-4 py-2 pr-9 bg-trellis-ground border border-white/10 rounded-lg text-sm text-gray-200 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-trellis-leaf outline-none transition-smooth touch-manipulation"
+                  >
+                    <option className="bg-trellis-ground text-white">Popularity</option>
+                    <option className="bg-trellis-ground text-white">Newest</option>
+                    <option className="bg-trellis-ground text-white">Rating</option>
+                  </select>
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute right-3 text-xs text-gray-400"
+                  >
+                    ▾
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -112,7 +130,7 @@ export default function Marketplace() {
                             <span className="flex items-center gap-1 text-trellis-amber">👥 <span className="text-gray-300 font-semibold">{agent.users}</span></span>
                           </div>
                         </div>
-                        <button className="w-full py-3 bg-trellis-vine/20 hover:bg-trellis-vine/40 border border-trellis-vine/30 rounded-xl transition-smooth font-bold text-sm tracking-wide">
+                        <button className="w-full min-h-[44px] py-3 bg-trellis-vine/20 hover:bg-trellis-vine/40 border border-trellis-vine/30 rounded-xl transition-smooth font-bold text-sm tracking-wide focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-trellis-leaf active:scale-[0.99] touch-manipulation">
                             View Agent
                         </button>
                     </div>
